@@ -65,8 +65,8 @@ interface GradeRecord {
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [email, setEmail] = useState('fondateur@csbphiladelphia.bj');
-  const [password, setPassword] = useState('SuperAdmin@2026!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
@@ -94,7 +94,7 @@ export function App() {
   const [staffList, setStaffList] = useState<User[]>([]);
   const [staffName, setStaffName] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
-  const [staffPassword, setStaffPassword] = useState('Prof@2026!');
+  const [staffPassword, setStaffPassword] = useState('');
   const [staffRole, setStaffRole] = useState<'TEACHER' | 'SECRETARY' | 'ADMIN'>('TEACHER');
   const [staffPhone, setStaffPhone] = useState('');
 
@@ -204,6 +204,8 @@ export function App() {
       localStorage.setItem('csb_token', token);
       localStorage.setItem('csb_user', JSON.stringify(loggedUser));
       setUser(loggedUser);
+      setEmail('');
+      setPassword('');
       if (loggedUser.role === 'TEACHER') setActiveTab('grades');
       else setActiveTab('inscription');
     } catch (err: unknown) {
@@ -221,6 +223,8 @@ export function App() {
     localStorage.removeItem('csb_token');
     localStorage.removeItem('csb_user');
     setUser(null);
+    setEmail('');
+    setPassword('');
   };
 
   const handleCreateClass = async (e: React.FormEvent) => {
@@ -320,6 +324,7 @@ export function App() {
       setSuccessMsg(`Compte créé pour ${res.data.fullName} (${res.data.email}) !`);
       setStaffName('');
       setStaffEmail('');
+      setStaffPassword('');
       setStaffPhone('');
       await loadStaff();
     } catch (err: unknown) {
@@ -397,14 +402,21 @@ export function App() {
     }
   };
 
-  // ÉCRAN DE CONNEXION
+  // ÉCRAN DE CONNEXION SÉCURISÉ (SANS CARTES DE DÉMONSTRATION)
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col justify-center items-center p-4">
-        <div className="max-w-lg w-full bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
           <div className="bg-[#0f294a] text-white p-6 text-center border-b-4 border-amber-500">
             <img
               src="/logo-csb.png"
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.tried) {
+                  img.dataset.tried = '1';
+                  img.src = '/logo-csb.png.png';
+                }
+              }}
               alt="Logo CSB"
               className="w-20 h-20 object-contain mx-auto mb-3 bg-white rounded-full p-1.5 shadow"
             />
@@ -438,6 +450,8 @@ export function App() {
                 <input
                   type="email"
                   required
+                  autoComplete="off"
+                  placeholder="Saisissez votre email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm"
@@ -454,6 +468,8 @@ export function App() {
                 <input
                   type="password"
                   required
+                  autoComplete="new-password"
+                  placeholder="Saisissez votre mot de passe"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm"
@@ -468,53 +484,6 @@ export function App() {
             >
               {loading ? 'Connexion...' : 'Se connecter (Année 2026-2027)'}
             </button>
-
-            <div className="pt-3 border-t border-slate-200 grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('fondateur@csbphiladelphia.bj');
-                  setPassword('SuperAdmin@2026!');
-                }}
-                className="p-2 border rounded hover:bg-amber-50 text-left cursor-pointer"
-              >
-                <strong className="text-[#0f294a] block">Fondateur (Contrôle Total)</strong>
-                <span className="text-[11px] text-slate-500">fondateur@csbphiladelphia.bj</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('directeur@csbphiladelphia.bj');
-                  setPassword('Directeur@2026!');
-                }}
-                className="p-2 border rounded hover:bg-amber-50 text-left cursor-pointer"
-              >
-                <strong className="text-[#0f294a] block">Directeur (Validation)</strong>
-                <span className="text-[11px] text-slate-500">directeur@csbphiladelphia.bj</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('secretariat@csbphiladelphia.bj');
-                  setPassword('Secretaire@2026!');
-                }}
-                className="p-2 border rounded hover:bg-amber-50 text-left cursor-pointer"
-              >
-                <strong className="text-[#0f294a] block">Secrétariat (Inscriptions)</strong>
-                <span className="text-[11px] text-slate-500">secretariat@csbphiladelphia.bj</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('prof.koffi@csbphiladelphia.bj');
-                  setPassword('Prof@2026!');
-                }}
-                className="p-2 border rounded hover:bg-amber-50 text-left cursor-pointer"
-              >
-                <strong className="text-[#0f294a] block">Enseignant (Saisie Mobile)</strong>
-                <span className="text-[11px] text-slate-500">prof.koffi@csbphiladelphia.bj</span>
-              </button>
-            </div>
           </form>
         </div>
       </div>
@@ -542,6 +511,13 @@ export function App() {
           <div className="p-4 border-b border-slate-700 flex items-center gap-3">
             <img
               src="/logo-csb.png"
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.tried) {
+                  img.dataset.tried = '1';
+                  img.src = '/logo-csb.png.png';
+                }
+              }}
               alt="Logo CSB"
               className="w-12 h-12 object-contain bg-white rounded-full p-1 shrink-0"
             />
@@ -1012,6 +988,13 @@ export function App() {
                 <div className="col-span-8 flex items-start gap-3 border-r border-black pr-3">
                   <img
                     src="/logo-csb.png"
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      if (!img.dataset.tried) {
+                        img.dataset.tried = '1';
+                        img.src = '/logo-csb.png.png';
+                      }
+                    }}
                     alt="Logo"
                     className="w-16 h-16 object-contain border border-slate-300"
                   />
@@ -1216,6 +1199,7 @@ export function App() {
                     <input
                       type="text"
                       required
+                      placeholder="Définir un mot de passe"
                       value={staffPassword}
                       onChange={(e) => setStaffPassword(e.target.value)}
                       className="w-full border rounded-lg px-3 py-2"
