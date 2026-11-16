@@ -1,10 +1,14 @@
 import axios from 'axios';
 
-const serverHost = window.location.hostname || 'localhost';
-const baseURL = import.meta.env.VITE_API_URL || `http://${serverHost}:5000/api`;
+const isLocalhost =
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+const API_BASE_URL = isLocalhost
+  ? 'http://localhost:10000/api'
+  : 'https://csb-philadelphia-backend.onrender.com/api';
 
 const api = axios.create({
-  baseURL,
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
