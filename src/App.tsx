@@ -59,6 +59,7 @@ interface SchoolClass {
 interface GradeRecord {
   id?: string;
   subjectId: string;
+  coefficient: number;
   interrogation: number;
   devoir1: number;
   devoir2: number;
@@ -204,6 +205,7 @@ export function App() {
           ? {
               id: found.id,
               subjectId: subj.id,
+              coefficient: subj.coefficient,
               interrogation: found.interrogation ?? 0,
               devoir1: found.devoir1 ?? 0,
               devoir2: found.devoir2 ?? 0,
@@ -212,6 +214,7 @@ export function App() {
             }
           : {
               subjectId: subj.id,
+              coefficient: subj.coefficient,
               interrogation: 0,
               devoir1: 0,
               devoir2: 0,
@@ -410,7 +413,7 @@ export function App() {
 
   const updateLocalGrade = (
     subjectId: string,
-    field: 'interrogation' | 'devoir1' | 'devoir2' | 'appreciation',
+    field: 'coefficient' | 'interrogation' | 'devoir1' | 'devoir2' | 'appreciation',
     value: string
   ) => {
     setGradesMap((prev) => ({
@@ -420,6 +423,8 @@ export function App() {
         [field]:
           field === 'appreciation'
             ? value
+            : field === 'coefficient'
+            ? Math.max(0, parseFloat(value) || 0)
             : Math.min(20, Math.max(0, parseFloat(value) || 0)),
       },
     }));
@@ -435,6 +440,7 @@ export function App() {
         studentId: selectedStudentId,
         subjectId,
         trimester,
+        coefficient: row.coefficient,
         interrogation: row.interrogation,
         devoir1: row.devoir1,
         devoir2: row.devoir2,
@@ -443,9 +449,10 @@ export function App() {
       });
       setSuccessMsg(
         lockAfterSave
-          ? 'Note enregistrée et VERROUILLÉE ! Seul le Directeur peut désormais la modifier.'
+          ? 'Note et coefficient enregistrés et VERROUILLÉS !'
           : 'Brouillon enregistré.'
       );
+      await loadClasses();
       await loadStudentGrades(selectedStudentId, trimester);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -467,7 +474,6 @@ export function App() {
 
   // ÉCRAN D'ACCUEIL : ESPACE PERSONNEL + ESPACE PARENTS (MATRICULE)
   if (!user) {
-    // Affichage plein écran du bulletin trouvé pour le parent
     if (portalMode === 'parent' && parentBulletin) {
       return (
         <div className="min-h-screen bg-slate-100 p-4 md:p-6">
@@ -508,7 +514,6 @@ export function App() {
             </div>
           </div>
 
-          {/* Bulletin officiel identique à celui de la Direction */}
           <div className="bg-white max-w-4xl mx-auto p-6 border-2 border-black text-black font-sans text-xs shadow-lg">
             <div className="grid grid-cols-12 border-b-2 border-black pb-3 mb-3 items-center">
               <div className="col-span-8 flex items-start gap-3 border-r border-black pr-3">
@@ -704,7 +709,6 @@ export function App() {
             </p>
           </div>
 
-          {/* Onglets de choix : Espace Personnel vs Espace Parents */}
           <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50 text-xs font-bold">
             <button
               type="button"
@@ -851,11 +855,18 @@ export function App() {
 
   const subjects = currentClass?.subjects || [];
   const bulletinRows = subjects.map((s) => {
-    const g = gradesMap[s.id] || { interrogation: 0, devoir1: 0, devoir2: 0, appreciation: '' };
+    const g = gradesMap[s.id] || {
+      coefficient: s.coefficient,
+      interrogation: 0,
+      devoir1: 0,
+      devoir2: 0,
+      appreciation: '',
+    };
+    const coef = g.coefficient ?? s.coefficient;
     const moyDev = (g.devoir1 + g.devoir2) / 2;
     const moyTrim = Number(((g.interrogation + 2 * moyDev) / 3).toFixed(2));
-    const moyCoef = Number((moyTrim * s.coefficient).toFixed(2));
-    return { ...s, ...g, moyTrim, moyCoef };
+    const moyCoef = Number((moyTrim * coef).toFixed(2));
+    return { ...s, ...g, coefficient: coef, moyTrim, moyCoef };
   });
 
   const totalCoef = bulletinRows.reduce((acc, r) => acc + r.coefficient, 0);
@@ -864,7 +875,6 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col md:flex-row">
-      {/* Barre latérale avec Logo du CSB PHILADELPHIA */}
       <aside className="w-full md:w-64 bg-[#0f294a] text-white flex flex-col justify-between print:hidden">
         <div>
           <div className="p-4 border-b border-slate-700 flex items-center gap-3">
@@ -955,7 +965,6 @@ export function App() {
         </div>
       </aside>
 
-      {/* Espace principal */}
       <main className="flex-1 p-4 md:p-6 overflow-y-auto">
         {error && (
           <div className="mb-4 bg-red-50 border-l-4 border-red-600 p-3 rounded flex items-center gap-2 text-sm text-red-700 print:hidden">
@@ -970,7 +979,6 @@ export function App() {
           </div>
         )}
 
-        {/* Barre de sélection Classe / Élève / Trimestre */}
         {activeTab !== 'staff' && (
           <div className="bg-white p-4 rounded-xl border border-slate-200 mb-6 flex flex-wrap gap-4 items-center justify-between print:hidden">
             <div className="flex flex-wrap gap-3 items-center">
@@ -1200,15 +1208,15 @@ export function App() {
           </div>
         )}
 
-        {/* ONGLET 2 : SAISIE & VERROUILLAGE DES NOTES */}
+        {/* ONGLET 2 : SAISIE & VERROUILLAGE DES NOTES + COEFFICIENTS MODIFIABLES */}
         {activeTab === 'grades' && (
           <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200">
             <div className="mb-4">
               <h3 className="font-bold text-lg text-[#0f294a]">
-                Saisie des Notes — {currentStudent?.lastName} {currentStudent?.firstName}
+                Saisie des Notes & Coefficients — {currentStudent?.lastName} {currentStudent?.firstName}
               </h3>
               <p className="text-xs text-slate-500">
-                Une fois verrouillée par le professeur, seul le Fondateur ou le Directeur peut déverrouiller/corriger la note.
+                Vous pouvez ajuster le coefficient de chaque matière selon la classe ({currentClass?.name}) directement dans la colonne COEF avant de valider.
               </p>
             </div>
 
@@ -1228,6 +1236,7 @@ export function App() {
                 <tbody className="divide-y">
                   {subjects.map((subj) => {
                     const g = gradesMap[subj.id] || {
+                      coefficient: subj.coefficient,
                       interrogation: 0,
                       devoir1: 0,
                       devoir2: 0,
@@ -1240,7 +1249,19 @@ export function App() {
                     return (
                       <tr key={subj.id} className={isLocked ? 'bg-slate-50' : ''}>
                         <td className="py-2 px-2 font-semibold text-[#0f294a]">{subj.name}</td>
-                        <td className="py-2 px-2 text-center">{subj.coefficient}</td>
+                        <td className="py-2 px-2 text-center">
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            disabled={readOnly}
+                            value={g.coefficient}
+                            onChange={(e) =>
+                              updateLocalGrade(subj.id, 'coefficient', e.target.value)
+                            }
+                            className="w-14 border border-amber-400 bg-amber-50/40 font-bold text-[#0f294a] rounded px-1 py-1 text-center disabled:bg-slate-200 disabled:border-slate-300"
+                          />
+                        </td>
                         <td className="py-2 px-2 text-center">
                           <input
                             type="number"
@@ -1364,8 +1385,8 @@ export function App() {
                     </p>
                     <p className="italic text-[11px]">Sis à Golo-Lohoussa (Abomey-Calavi)</p>
                     <p className="text-[11px] font-medium mt-0.5">09 BP : 238 Cotonou</p>
-                    <p className="text-[11px]">Tél : 01 97 95 75 63 / 01 61 31 99 68 / 01 53 52 41 90</p>
-                    <p className="text-[11px] underline">e-mail : philawin2@gmail.com</p>
+                    <p className="text-[11px]">Tél : 01 97 95 75 63 / 01 61 31 99 68</p>
+                    <p className="text-[11px] underline">e-mail : philavin2@gmail.com</p>
                   </div>
                 </div>
 
