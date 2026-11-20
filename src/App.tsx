@@ -19,6 +19,10 @@ import {
   Search,
   GraduationCap,
   ArrowLeft,
+  Wallet,
+  Receipt,
+  BarChart3,
+  Calendar,
 } from 'lucide-react';
 import axios from 'axios';
 import api from './services/api';
@@ -28,8 +32,18 @@ interface User {
   matricule: string;
   fullName: string;
   email: string;
-  role: 'SUPER_ADMIN' | 'ADMIN' | 'TEACHER' | 'SECRETARY';
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'TEACHER' | 'SECRETARY' | 'ACCOUNTANT';
   phone?: string;
+}
+
+interface PaymentRecord {
+  id: string;
+  receiptNumber: string;
+  amount: number;
+  paymentType: string;
+  paymentMethod: string;
+  note?: string;
+  paidAt: string;
 }
 
 interface Student {
@@ -40,6 +54,7 @@ interface Student {
   birthDate: string;
   gender: string;
   isRepeating: boolean;
+  payments?: PaymentRecord[];
 }
 
 interface Subject {
@@ -52,8 +67,53 @@ interface Subject {
 interface SchoolClass {
   id: string;
   name: string;
+  cycle: 'PRIMAIRE' | 'SECONDAIRE';
+  tuitionFee: number;
+  inscriptionFee: number;
   students: Student[];
   subjects: Subject[];
+}
+
+interface GeneralExpenseRecord {
+  id: string;
+  label: string;
+  category: string;
+  amount: number;
+  paymentMethod: string;
+  beneficiary?: string;
+  reference?: string;
+  expenseDate: string;
+}
+
+interface AccountingOverview {
+  classes: SchoolClass[];
+  expenses: GeneralExpenseRecord[];
+  stats: {
+    totalStudents: number;
+    primaireStudents: number;
+    secondaireStudents: number;
+    boysCount: number;
+    girlsCount: number;
+    repeatingCount: number;
+    totalExpectedRevenue: number;
+    totalCollectedRevenue: number;
+    totalRemainingRevenue: number;
+    totalExpenses: number;
+    netBalance: number;
+    classStats: {
+      id: string;
+      name: string;
+      cycle: 'PRIMAIRE' | 'SECONDAIRE';
+      tuitionFee: number;
+      inscriptionFee: number;
+      studentCount: number;
+      boys: number;
+      girls: number;
+      expected: number;
+      collected: number;
+      remaining: number;
+    }[];
+  };
 }
 
 interface GradeRecord {
@@ -94,6 +154,8 @@ interface ParentBulletinData {
   moyenneTrimestrielle: number;
 }
 
+const ACADEMIC_YEARS = ['2026-2027', '2027-2028', '2028-2029', '2029-2030'];
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
@@ -102,6 +164,9 @@ export function App() {
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Année scolaire active
+  const [selectedYear, setSelectedYear] = useState<string>('2026-2027');
+
   // Mode d'accès sur l'écran d'accueil (Personnel vs Parents)
   const [portalMode, setPortalMode] = useState<'staff' | 'parent'>('staff');
   const [parentMatricule, setParentMatricule] = useState('');
@@ -109,15 +174,20 @@ export function App() {
   const [parentBulletin, setParentBulletin] = useState<ParentBulletinData | null>(null);
   const [parentLoading, setParentLoading] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'inscription' | 'grades' | 'bulletins' | 'staff'>(
-    'inscription'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'inscription' | 'grades' | 'bulletins' | 'frmInscription' | 'fraisGeneraux' | 'stats' | 'staff'
+  >('inscription');
+
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [trimester, setTrimester] = useState<'T1' | 'T2' | 'T3'>('T1');
 
+  // Création classe
   const [newClassName, setNewClassName] = useState('');
+  const [newClassCycle, setNewClassCycle] = useState<'PRIMAIRE' | 'SECONDAIRE'>('SECONDAIRE');
+  const [newClassInscriptionFee, setNewClassInscriptionFee] = useState('5000');
+  const [newClassTuitionFee, setNewClassTuitionFee] = useState('60000');
 
   // Formulaire élève
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
@@ -128,17 +198,47 @@ export function App() {
   const [gender, setGender] = useState('F');
   const [isRepeating, setIsRepeating] = useState(false);
 
+  // Comptabilité (frmInscription & Frais Généraux)
+  const [accountingData, setAccountingData] = useState<AccountingOverview | null>(null);
+  const [cycleFilter, setCycleFilter] = useState<'ALL' | 'PRIMAIRE' | 'SECONDAIRE'>('ALL');
+  const [searchAccounting, setSearchAccounting] = useState('');
+  const [payStudentId, setPayStudentId] = useState('');
+  const [payAmount, setPayAmount] = useState('');
+  const [payType, setPayType] = useState('SCOLARITE - 1ERE TRANCHE');
+  const [payMethod, setPayMethod] = useState('ESPECES');
+  const [payNote, setPayNote] = useState('');
+  const [printedReceipt, setPrintedReceipt] = useState<any | null>(null);
+
+  // Tarifs classe dans frmInscription
+  const [feeClassId, setFeeClassId] = useState('');
+  const [feeCycle, setFeeCycle] = useState<'PRIMAIRE' | 'SECONDAIRE'>('SECONDAIRE');
+  const [feeInscription, setFeeInscription] = useState('0');
+  const [feeTuition, setFeeTuition] = useState('0');
+
+  // Formulaire Frais Généraux
+  const [expLabel, setExpLabel] = useState('');
+  const [expCategory, setExpCategory] = useState('SALAIRES & VACATIONS');
+  const [expAmount, setExpAmount] = useState('');
+  const [expMethod, setExpMethod] = useState('ESPECES');
+  const [expBeneficiary, setExpBeneficiary] = useState('');
+  const [expReference, setExpReference] = useState('');
+  const [expDate, setExpDate] = useState(new Date().toISOString().split('T')[0]);
+
   // Gestion du personnel & enseignants
   const [staffList, setStaffList] = useState<User[]>([]);
   const [staffName, setStaffName] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
   const [staffPassword, setStaffPassword] = useState('');
-  const [staffRole, setStaffRole] = useState<'TEACHER' | 'SECRETARY' | 'ADMIN'>('TEACHER');
+  const [staffRole, setStaffRole] = useState<'TEACHER' | 'SECRETARY' | 'ACCOUNTANT' | 'ADMIN'>(
+    'TEACHER'
+  );
   const [staffPhone, setStaffPhone] = useState('');
 
   const [gradesMap, setGradesMap] = useState<Record<string, GradeRecord>>({});
 
   const isDirection = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  const isAccountant = user?.role === 'ACCOUNTANT';
+  const canAccessAccounting = isDirection || isAccountant;
   const canInscribe = isDirection || user?.role === 'SECRETARY';
 
   useEffect(() => {
@@ -147,12 +247,13 @@ export function App() {
       const parsed: User = JSON.parse(savedUser);
       setUser(parsed);
       if (parsed.role === 'TEACHER') setActiveTab('grades');
+      else if (parsed.role === 'ACCOUNTANT') setActiveTab('frmInscription');
     }
   }, []);
 
-  const loadClasses = async () => {
+  const loadClasses = async (yr = selectedYear) => {
     try {
-      const res = await api.get('/academic/classes');
+      const res = await api.get(`/academic/classes?year=${encodeURIComponent(yr)}`);
       setClasses(res.data);
       if (res.data.length > 0) {
         const targetClass =
@@ -166,6 +267,27 @@ export function App() {
         } else {
           setSelectedStudentId('');
         }
+      } else {
+        setSelectedClassId('');
+        setSelectedStudentId('');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadAccounting = async (yr = selectedYear) => {
+    if (!user || user.role === 'TEACHER') return;
+    try {
+      const res = await api.get(`/accounting/overview?year=${encodeURIComponent(yr)}`);
+      setAccountingData(res.data);
+      if (res.data.classes?.length > 0) {
+        const cls =
+          res.data.classes.find((c: SchoolClass) => c.id === feeClassId) || res.data.classes[0];
+        setFeeClassId(cls.id);
+        setFeeCycle(cls.cycle || 'SECONDAIRE');
+        setFeeInscription(String(cls.inscriptionFee || 0));
+        setFeeTuition(String(cls.tuitionFee || 0));
       }
     } catch (e) {
       console.error(e);
@@ -184,12 +306,13 @@ export function App() {
 
   useEffect(() => {
     if (user) {
-      loadClasses();
+      loadClasses(selectedYear);
+      loadAccounting(selectedYear);
       if (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') {
         loadStaff();
       }
     }
-  }, [user]);
+  }, [user, selectedYear]);
 
   const currentClass = classes.find((c) => c.id === selectedClassId);
   const currentStudent = currentClass?.students.find((s) => s.id === selectedStudentId);
@@ -247,6 +370,7 @@ export function App() {
       setEmail('');
       setPassword('');
       if (loggedUser.role === 'TEACHER') setActiveTab('grades');
+      else if (loggedUser.role === 'ACCOUNTANT') setActiveTab('frmInscription');
       else setActiveTab('inscription');
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -297,10 +421,19 @@ export function App() {
     e.preventDefault();
     if (!newClassName.trim()) return;
     try {
-      const res = await api.post('/academic/classes', { name: newClassName.trim() });
+      const res = await api.post('/academic/classes', {
+        name: newClassName.trim(),
+        cycle: newClassCycle,
+        inscriptionFee: Number(newClassInscriptionFee) || 0,
+        tuitionFee: Number(newClassTuitionFee) || 0,
+        yearName: selectedYear,
+      });
       setNewClassName('');
-      setSuccessMsg(`Classe "${res.data.name}" créée avec les 14 matières officielles !`);
-      await loadClasses();
+      setSuccessMsg(
+        `Classe "${res.data.name}" (${newClassCycle}) créée pour l'année ${selectedYear} !`
+      );
+      await loadClasses(selectedYear);
+      await loadAccounting(selectedYear);
       setSelectedClassId(res.data.id);
     } catch {
       setError('Impossible de créer la classe.');
@@ -337,14 +470,17 @@ export function App() {
           isRepeating,
           classId: selectedClassId,
         });
-        setSuccessMsg(`Élève ${res.data.lastName} ${res.data.firstName} inscrit avec succès !`);
+        setSuccessMsg(
+          `Élève ${res.data.lastName} ${res.data.firstName} inscrit avec succès (${selectedYear}) !`
+        );
         setSelectedStudentId(res.data.id);
       }
       setMatricule('');
       setLastName('');
       setFirstName('');
       setIsRepeating(false);
-      await loadClasses();
+      await loadClasses(selectedYear);
+      await loadAccounting(selectedYear);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.message || "Erreur lors de l'enregistrement.");
@@ -369,9 +505,94 @@ export function App() {
     try {
       await api.delete(`/academic/students/${st.id}`);
       setSuccessMsg(`Élève ${st.lastName} ${st.firstName} supprimé.`);
-      await loadClasses();
+      await loadClasses(selectedYear);
+      await loadAccounting(selectedYear);
     } catch {
       setError('Action réservée au Fondateur ou au Directeur.');
+    }
+  };
+
+  // Comptabilité : Mise à jour des tarifs d'une classe
+  const handleSaveClassFees = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feeClassId) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      await api.put(`/accounting/classes/${feeClassId}/fees`, {
+        cycle: feeCycle,
+        inscriptionFee: Number(feeInscription) || 0,
+        tuitionFee: Number(feeTuition) || 0,
+      });
+      setSuccessMsg('Tarifs et cycle de la classe enregistrés !');
+      await loadClasses(selectedYear);
+      await loadAccounting(selectedYear);
+    } catch {
+      setError('Erreur lors de la mise à jour des tarifs.');
+    }
+  };
+
+  // Comptabilité : Encaisser un versement élève (frmInscription)
+  const handleRecordPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!payStudentId || !payAmount) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      const res = await api.post('/accounting/payments', {
+        studentId: payStudentId,
+        yearName: selectedYear,
+        amount: Number(payAmount),
+        paymentType: payType,
+        paymentMethod: payMethod,
+        note: payNote,
+      });
+      setPrintedReceipt(res.data);
+      setPayAmount('');
+      setPayNote('');
+      setSuccessMsg(`Versement de ${Number(payAmount).toLocaleString()} FCFA enregistré !`);
+      await loadAccounting(selectedYear);
+    } catch {
+      setError("Erreur lors de l'enregistrement du paiement.");
+    }
+  };
+
+  // Comptabilité : Enregistrer une dépense (Frais Généraux)
+  const handleRecordExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!expLabel || !expAmount) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      await api.post('/accounting/expenses', {
+        yearName: selectedYear,
+        label: expLabel,
+        category: expCategory,
+        amount: Number(expAmount),
+        paymentMethod: expMethod,
+        beneficiary: expBeneficiary,
+        reference: expReference,
+        expenseDate: expDate,
+      });
+      setExpLabel('');
+      setExpAmount('');
+      setExpBeneficiary('');
+      setExpReference('');
+      setSuccessMsg('Dépense enregistrée dans les Frais Généraux !');
+      await loadAccounting(selectedYear);
+    } catch {
+      setError("Erreur lors de l'enregistrement de la dépense.");
+    }
+  };
+
+  const handleDeleteExpense = async (id: string) => {
+    if (!window.confirm('Supprimer cette dépense des Frais Généraux ?')) return;
+    try {
+      await api.delete(`/accounting/expenses/${id}`);
+      setSuccessMsg('Dépense supprimée.');
+      await loadAccounting(selectedYear);
+    } catch {
+      setError('Suppression non autorisée.');
     }
   };
 
@@ -452,7 +673,7 @@ export function App() {
           ? 'Note et coefficient enregistrés et VERROUILLÉS !'
           : 'Brouillon enregistré.'
       );
-      await loadClasses();
+      await loadClasses(selectedYear);
       await loadStudentGrades(selectedStudentId, trimester);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -546,7 +767,7 @@ export function App() {
                   BULLETIN DE NOTES
                 </div>
                 <div className="mt-3 text-xs font-bold">
-                  Année scolaire : <span className="underline">2026 - 2027</span>
+                  Année scolaire : <span className="underline">{selectedYear}</span>
                 </div>
               </div>
             </div>
@@ -629,50 +850,6 @@ export function App() {
             <div className="border-x border-b border-black p-2 flex justify-between font-extrabold text-sm bg-slate-50">
               <span>Moyenne Trimestrielle</span>
               <span>{parentBulletin.moyenneTrimestrielle} / 20</span>
-            </div>
-
-            <div className="grid grid-cols-12 border-x border-b border-black text-[11px]">
-              <div className="col-span-3 border-r border-black p-2 font-extrabold flex items-center justify-center bg-slate-100">
-                BILAN DU TRIMESTRE
-              </div>
-              <div className="col-span-9 p-2 space-y-1">
-                <p>
-                  Moyenne du trimestre : <strong>{parentBulletin.moyenneTrimestrielle} / 20</strong>
-                </p>
-                <p>Effectif de la classe : <strong>{parentBulletin.student.classSize}</strong></p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-12 border-x border-b border-black text-[11px]">
-              <div className="col-span-6 border-r border-black p-2.5 space-y-1">
-                <p className="font-extrabold underline text-center mb-1">
-                  Décision du Conseil des Professeurs
-                </p>
-                <div className="flex justify-between">
-                  <span>Tableau d'honneur</span>
-                  <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                    {parentBulletin.moyenneTrimestrielle >= 12 ? '✓' : ''}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Encouragements</span>
-                  <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                    {parentBulletin.moyenneTrimestrielle >= 14 ? '✓' : ''}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Félicitation</span>
-                  <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                    {parentBulletin.moyenneTrimestrielle >= 16 ? '✓' : ''}
-                  </span>
-                </div>
-              </div>
-              <div className="col-span-6 p-2.5 flex flex-col justify-between">
-                <p className="font-extrabold underline text-center">
-                  Appréciation du Chef d'Établissement
-                </p>
-                <p className="text-right font-bold mt-8">Le Directeur</p>
-              </div>
             </div>
           </div>
         </div>
@@ -791,7 +968,7 @@ export function App() {
                 disabled={loading}
                 className="w-full bg-[#0f294a] hover:bg-[#183d6d] text-white font-bold py-2.5 px-4 rounded-lg cursor-pointer"
               >
-                {loading ? 'Connexion...' : 'Se connecter (Année 2026-2027)'}
+                {loading ? 'Connexion...' : 'Se connecter'}
               </button>
             </form>
           ) : (
@@ -873,8 +1050,38 @@ export function App() {
   const totalMoyCoef = Number(bulletinRows.reduce((acc, r) => acc + r.moyCoef, 0).toFixed(2));
   const moyenneTrimestrielle = totalCoef > 0 ? Number((totalMoyCoef / totalCoef).toFixed(2)) : 0;
 
+  // Liste à plat des élèves pour frmInscription
+  const allAccountingStudents = (accountingData?.classes || []).flatMap((cls) =>
+    cls.students.map((st) => {
+      const due = (cls.inscriptionFee || 0) + (cls.tuitionFee || 0);
+      const paid = (st.payments || []).reduce((acc, p) => acc + p.amount, 0);
+      return {
+        ...st,
+        classId: cls.id,
+        className: cls.name,
+        cycle: cls.cycle,
+        due,
+        paid,
+        remaining: Math.max(0, due - paid),
+      };
+    })
+  );
+
+  const filteredAccountingStudents = allAccountingStudents.filter((st) => {
+    const matchesCycle = cycleFilter === 'ALL' || st.cycle === cycleFilter;
+    const q = searchAccounting.toLowerCase();
+    const matchesSearch =
+      !q ||
+      st.matricule.toLowerCase().includes(q) ||
+      st.lastName.toLowerCase().includes(q) ||
+      st.firstName.toLowerCase().includes(q) ||
+      st.className.toLowerCase().includes(q);
+    return matchesCycle && matchesSearch;
+  });
+
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col md:flex-row">
+      {/* Barre latérale */}
       <aside className="w-full md:w-64 bg-[#0f294a] text-white flex flex-col justify-between print:hidden">
         <div>
           <div className="p-4 border-b border-slate-700 flex items-center gap-3">
@@ -892,11 +1099,30 @@ export function App() {
             />
             <div>
               <h2 className="font-bold text-xs leading-tight">CSB PHILADELPHIA</h2>
-              <p className="text-[10px] text-amber-400 mt-0.5">2026-2027 • {user.role}</p>
+              <p className="text-[10px] text-amber-400 mt-0.5">{user.role}</p>
             </div>
           </div>
 
-          <nav className="p-3 flex md:flex-col gap-2 overflow-x-auto">
+          {/* Sélecteur d'année scolaire */}
+          <div className="px-4 py-3 border-b border-slate-700 bg-[#0a1d36]">
+            <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-amber-300 mb-1">
+              <Calendar className="w-3.5 h-3.5" />
+              Année Scolaire
+            </label>
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value)}
+              className="w-full bg-[#163863] text-white border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs font-bold"
+            >
+              {ACADEMIC_YEARS.map((yr) => (
+                <option key={yr} value={yr}>
+                  {yr}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <nav className="p-3 flex md:flex-col gap-1.5 overflow-x-auto">
             {canInscribe && (
               <button
                 onClick={() => setActiveTab('inscription')}
@@ -911,19 +1137,21 @@ export function App() {
               </button>
             )}
 
-            <button
-              onClick={() => setActiveTab('grades')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
-                activeTab === 'grades'
-                  ? 'bg-amber-500 text-[#0f294a] font-bold'
-                  : 'text-slate-300 hover:bg-white/10'
-              }`}
-            >
-              <BookOpen className="w-4 h-4" />
-              Saisie des Notes
-            </button>
+            {user.role !== 'ACCOUNTANT' && (
+              <button
+                onClick={() => setActiveTab('grades')}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
+                  activeTab === 'grades'
+                    ? 'bg-amber-500 text-[#0f294a] font-bold'
+                    : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <BookOpen className="w-4 h-4" />
+                Saisie des Notes
+              </button>
+            )}
 
-            {user.role !== 'TEACHER' && (
+            {user.role !== 'TEACHER' && user.role !== 'ACCOUNTANT' && (
               <button
                 onClick={() => setActiveTab('bulletins')}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
@@ -934,6 +1162,48 @@ export function App() {
               >
                 <FileText className="w-4 h-4" />
                 Bulletin Officiel
+              </button>
+            )}
+
+            {(canAccessAccounting || user.role === 'SECRETARY') && (
+              <button
+                onClick={() => setActiveTab('frmInscription')}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
+                  activeTab === 'frmInscription'
+                    ? 'bg-amber-500 text-[#0f294a] font-bold'
+                    : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <Wallet className="w-4 h-4" />
+                frmInscription (Scolarité)
+              </button>
+            )}
+
+            {canAccessAccounting && (
+              <button
+                onClick={() => setActiveTab('fraisGeneraux')}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
+                  activeTab === 'fraisGeneraux'
+                    ? 'bg-amber-500 text-[#0f294a] font-bold'
+                    : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <Receipt className="w-4 h-4" />
+                Frais Généraux
+              </button>
+            )}
+
+            {(canAccessAccounting || user.role === 'SECRETARY') && (
+              <button
+                onClick={() => setActiveTab('stats')}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium whitespace-nowrap cursor-pointer ${
+                  activeTab === 'stats'
+                    ? 'bg-amber-500 text-[#0f294a] font-bold'
+                    : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4" />
+                Statistiques & Effectifs
               </button>
             )}
 
@@ -979,11 +1249,14 @@ export function App() {
           </div>
         )}
 
-        {activeTab !== 'staff' && (
+        {/* Barre de sélection Classe / Élève / Trimestre pour Notes & Bulletins */}
+        {(activeTab === 'inscription' || activeTab === 'grades' || activeTab === 'bulletins') && (
           <div className="bg-white p-4 rounded-xl border border-slate-200 mb-6 flex flex-wrap gap-4 items-center justify-between print:hidden">
             <div className="flex flex-wrap gap-3 items-center">
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase">Classe</label>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase">
+                  Classe ({selectedYear})
+                </label>
                 <select
                   value={selectedClassId}
                   onChange={(e) => {
@@ -996,7 +1269,7 @@ export function App() {
                 >
                   {classes.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} ({c.students.length} élèves)
+                      [{c.cycle}] {c.name} ({c.students.length} élèves)
                     </option>
                   ))}
                 </select>
@@ -1033,7 +1306,7 @@ export function App() {
           </div>
         )}
 
-        {/* ONGLET 1 : INSCRIPTION, MODIFICATION & SUPPRESSION DES ÉLÈVES */}
+        {/* ONGLET 1 : INSCRIPTION & CLASSES */}
         {activeTab === 'inscription' && canInscribe && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -1041,7 +1314,7 @@ export function App() {
                 <UserPlus className="w-5 h-5 text-amber-500" />
                 {editingStudentId
                   ? `Modifier l'élève : ${lastName} ${firstName}`
-                  : `Inscrire un Élève en : ${currentClass?.name}`}
+                  : `Inscrire un Élève en : ${currentClass?.name || 'Aucune classe'} (${selectedYear})`}
               </h3>
 
               <form onSubmit={handleInscribeOrUpdateStudent} className="space-y-4 text-sm">
@@ -1144,25 +1417,70 @@ export function App() {
             </div>
 
             <div className="space-y-6">
-              {isDirection && (
+              {canInscribe && (
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <h3 className="font-bold text-base text-[#0f294a] mb-3 flex items-center gap-2">
                     <PlusCircle className="w-5 h-5 text-emerald-600" />
-                    Ouvrir une nouvelle classe (2026-2027)
+                    Ouvrir une classe ({selectedYear})
                   </h3>
-                  <form onSubmit={handleCreateClass} className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="Ex: 6ème, 5ème, 4ème, 2nde D..."
-                      value={newClassName}
-                      onChange={(e) => setNewClassName(e.target.value)}
-                      className="flex-1 border rounded-lg px-3 py-2 text-sm"
-                    />
+                  <form onSubmit={handleCreateClass} className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">Cycle *</label>
+                        <select
+                          value={newClassCycle}
+                          onChange={(e) =>
+                            setNewClassCycle(e.target.value as 'PRIMAIRE' | 'SECONDAIRE')
+                          }
+                          className="w-full border rounded-lg px-3 py-2"
+                        >
+                          <option value="PRIMAIRE">PRIMAIRE (CI - CM2)</option>
+                          <option value="SECONDAIRE">SECONDAIRE (6ème - Tle)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">Nom de la classe *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Ex: CI, CM2, 6ème, 3ème..."
+                          value={newClassName}
+                          onChange={(e) => setNewClassName(e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">
+                          Frais Inscription (FCFA)
+                        </label>
+                        <input
+                          type="number"
+                          value={newClassInscriptionFee}
+                          onChange={(e) => setNewClassInscriptionFee(e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">
+                          Scolarité Annuelle (FCFA)
+                        </label>
+                        <input
+                          type="number"
+                          value={newClassTuitionFee}
+                          onChange={(e) => setNewClassTuitionFee(e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2"
+                        />
+                      </div>
+                    </div>
+
                     <button
                       type="submit"
-                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-lg text-sm cursor-pointer"
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-lg text-sm cursor-pointer"
                     >
-                      Créer
+                      Créer la classe pour {selectedYear}
                     </button>
                   </form>
                 </div>
@@ -1171,7 +1489,7 @@ export function App() {
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                 <h3 className="font-bold text-base text-[#0f294a] mb-3 flex items-center gap-2">
                   <Users className="w-5 h-5 text-[#0f294a]" />
-                  Liste des inscrits en {currentClass?.name} ({currentClass?.students.length || 0})
+                  Inscrits en {currentClass?.name} ({currentClass?.students.length || 0})
                 </h3>
                 <ul className="divide-y text-sm">
                   {currentClass?.students.map((st) => (
@@ -1395,7 +1713,7 @@ export function App() {
                     BULLETIN DE NOTES
                   </div>
                   <div className="mt-3 text-xs font-bold">
-                    Année scolaire : <span className="underline">2026 - 2027</span>
+                    Année scolaire : <span className="underline">{selectedYear}</span>
                   </div>
                 </div>
               </div>
@@ -1479,73 +1797,546 @@ export function App() {
                 <span>Moyenne Trimestrielle</span>
                 <span>{moyenneTrimestrielle} / 20</span>
               </div>
+            </div>
+          </div>
+        )}
 
-              <div className="grid grid-cols-12 border-x border-b border-black text-[11px]">
-                <div className="col-span-3 border-r border-black p-2 font-extrabold flex items-center justify-center bg-slate-100">
-                  BILAN DU TRIMESTRE
+        {/* ONGLET 4 : frmInscription (SUIVI COMPTABLE DES INSCRIPTIONS & SCOLARITÉ) */}
+        {activeTab === 'frmInscription' && (
+          <div className="space-y-6">
+            {/* Reçu imprimable si un paiement vient d'être enregistré */}
+            {printedReceipt && (
+              <div className="bg-white max-w-lg mx-auto p-5 border-2 border-black text-xs space-y-2 shadow-md">
+                <div className="flex justify-between items-center border-b border-black pb-2">
+                  <div>
+                    <p className="font-extrabold uppercase">CSB PHILADELPHIA</p>
+                    <p className="text-[11px]">REÇU DE PAIEMENT — {selectedYear}</p>
+                  </div>
+                  <strong className="font-mono">{printedReceipt.receiptNumber}</strong>
                 </div>
-                <div className="col-span-9 p-2 space-y-1">
-                  <p>
-                    Moyenne du trimestre : <strong>{moyenneTrimestrielle} / 20</strong>
-                  </p>
-                  <p>Effectif de la classe : <strong>{currentClass?.students.length}</strong></p>
+                <p>
+                  Élève :{' '}
+                  <strong>
+                    {printedReceipt.student?.lastName} {printedReceipt.student?.firstName}
+                  </strong>{' '}
+                  ({printedReceipt.student?.matricule})
+                </p>
+                <p>
+                  Classe : <strong>{printedReceipt.student?.class?.name}</strong> • Motif :{' '}
+                  <strong>{printedReceipt.paymentType}</strong>
+                </p>
+                <p className="text-sm font-extrabold">
+                  Montant versé : {Number(printedReceipt.amount).toLocaleString()} FCFA (
+                  {printedReceipt.paymentMethod})
+                </p>
+                <div className="flex justify-end gap-2 pt-2 print:hidden">
+                  <button
+                    onClick={() => window.print()}
+                    className="bg-[#0f294a] text-white px-3 py-1 rounded font-bold cursor-pointer"
+                  >
+                    Imprimer le reçu
+                  </button>
+                  <button
+                    onClick={() => setPrintedReceipt(null)}
+                    className="border px-3 py-1 rounded cursor-pointer"
+                  >
+                    Fermer
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 print:hidden">
+              {/* Formulaire d'encaissement frmInscription */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="font-bold text-lg text-[#0f294a] mb-3 flex items-center gap-2">
+                  <Wallet className="w-5 h-5 text-emerald-600" />
+                  frmInscription — Encaisser un versement ({selectedYear})
+                </h3>
+                <form onSubmit={handleRecordPayment} className="space-y-3 text-sm">
+                  <div>
+                    <label className="block font-semibold mb-1">Élève inscrit *</label>
+                    <select
+                      required
+                      value={payStudentId}
+                      onChange={(e) => setPayStudentId(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2 font-semibold text-[#0f294a]"
+                    >
+                      <option value="">-- Sélectionner un élève --</option>
+                      {allAccountingStudents.map((st) => (
+                        <option key={st.id} value={st.id}>
+                          [{st.cycle} - {st.className}] {st.lastName} {st.firstName} ({st.matricule}
+                          ) — Reste: {st.remaining.toLocaleString()} F
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold mb-1">Montant versé (FCFA) *</label>
+                      <input
+                        type="number"
+                        required
+                        min="100"
+                        placeholder="Ex: 25000"
+                        value={payAmount}
+                        onChange={(e) => setPayAmount(e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2 font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Mode de paiement</label>
+                      <select
+                        value={payMethod}
+                        onChange={(e) => setPayMethod(e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2"
+                      >
+                        <option value="ESPECES">Espèces (Caisse)</option>
+                        <option value="MTN_MOMO">MTN MoMo</option>
+                        <option value="MOOV_MONEY">Moov Money</option>
+                        <option value="VIREMENT">Virement / Chèque</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Libellé / Tranche</label>
+                    <select
+                      value={payType}
+                      onChange={(e) => setPayType(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2"
+                    >
+                      <option value="FRAIS D'INSCRIPTION">Frais d'Inscription</option>
+                      <option value="SCOLARITE - 1ERE TRANCHE">Scolarité — 1ère Tranche</option>
+                      <option value="SCOLARITE - 2EME TRANCHE">Scolarité — 2ème Tranche</option>
+                      <option value="SCOLARITE - 3EME TRANCHE">Scolarité — 3ème Tranche</option>
+                      <option value="SOLDE COMPLET">Solde Complet</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-lg cursor-pointer"
+                  >
+                    Valider le paiement & Générer le reçu
+                  </button>
+                </form>
+              </div>
+
+              {/* Paramétrage des frais par classe (Primaire / Secondaire) */}
+              {canAccessAccounting && (
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                  <h3 className="font-bold text-base text-[#0f294a] mb-3">
+                    Tarifs & Cycle par classe ({selectedYear})
+                  </h3>
+                  <form onSubmit={handleSaveClassFees} className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold mb-1">Classe</label>
+                        <select
+                          value={feeClassId}
+                          onChange={(e) => {
+                            const cls = accountingData?.classes.find(
+                              (c) => c.id === e.target.value
+                            );
+                            setFeeClassId(e.target.value);
+                            if (cls) {
+                              setFeeCycle(cls.cycle);
+                              setFeeInscription(String(cls.inscriptionFee));
+                              setFeeTuition(String(cls.tuitionFee));
+                            }
+                          }}
+                          className="w-full border rounded-lg px-3 py-2 font-semibold"
+                        >
+                          {accountingData?.classes.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Cycle</label>
+                        <select
+                          value={feeCycle}
+                          onChange={(e) =>
+                            setFeeCycle(e.target.value as 'PRIMAIRE' | 'SECONDAIRE')
+                          }
+                          className="w-full border rounded-lg px-3 py-2"
+                        >
+                          <option value="PRIMAIRE">PRIMAIRE</option>
+                          <option value="SECONDAIRE">SECONDAIRE</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold mb-1">Frais Inscription (FCFA)</label>
+                        <input
+                          type="number"
+                          value={feeInscription}
+                          onChange={(e) => setFeeInscription(e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Scolarité Annuelle (FCFA)</label>
+                        <input
+                          type="number"
+                          value={feeTuition}
+                          onChange={(e) => setFeeTuition(e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full bg-[#0f294a] hover:bg-[#183d6d] text-white font-bold py-2 rounded-lg cursor-pointer"
+                    >
+                      Enregistrer les tarifs de la classe
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
+
+            {/* Tableau de suivi en temps réel de tous les élèves inscrits */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 print:hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="font-bold text-base text-[#0f294a]">
+                  Suivi en direct des élèves inscrits ({filteredAccountingStudents.length})
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={cycleFilter}
+                    onChange={(e) =>
+                      setCycleFilter(e.target.value as 'ALL' | 'PRIMAIRE' | 'SECONDAIRE')
+                    }
+                    className="border rounded-lg px-3 py-1.5 text-xs font-bold"
+                  >
+                    <option value="ALL">Tous les cycles (Primaire + Secondaire)</option>
+                    <option value="PRIMAIRE">Cycle Primaire uniquement</option>
+                    <option value="SECONDAIRE">Cycle Secondaire uniquement</option>
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="Rechercher nom, matricule..."
+                    value={searchAccounting}
+                    onChange={(e) => setSearchAccounting(e.target.value)}
+                    className="border rounded-lg px-3 py-1.5 text-xs"
+                  />
                 </div>
               </div>
 
-              {trimester === 'T3' && (
-                <div className="grid grid-cols-12 border-x border-b border-black text-[11px]">
-                  <div className="col-span-3 border-r border-black p-2 font-extrabold flex items-center justify-center bg-slate-100">
-                    BILAN ANNUEL
-                  </div>
-                  <div className="col-span-9 p-2 space-y-1">
-                    <p>Moy. 3ème Trme : <strong>{moyenneTrimestrielle} / 20</strong></p>
-                    <p>Décision de fin d'année : ........................................</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-12 border-x border-b border-black text-[11px]">
-                <div className="col-span-6 border-r border-black p-2.5 space-y-1">
-                  <p className="font-extrabold underline text-center mb-1">
-                    Décision du Conseil des Professeurs
-                  </p>
-                  <div className="flex justify-between">
-                    <span>Tableau d'honneur</span>
-                    <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                      {moyenneTrimestrielle >= 12 ? '✓' : ''}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Encouragements</span>
-                    <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                      {moyenneTrimestrielle >= 14 ? '✓' : ''}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Félicitation</span>
-                    <span className="inline-block w-4 h-4 border border-black text-center font-bold">
-                      {moyenneTrimestrielle >= 16 ? '✓' : ''}
-                    </span>
-                  </div>
-                </div>
-                <div className="col-span-6 p-2.5 flex flex-col justify-between">
-                  <p className="font-extrabold underline text-center">
-                    Appréciation du Chef d'Établissement
-                  </p>
-                  <p className="text-right font-bold mt-8">Le Directeur</p>
-                </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 uppercase border-b">
+                      <th className="p-2">Matricule</th>
+                      <th className="p-2">Élève</th>
+                      <th className="p-2">Cycle / Classe</th>
+                      <th className="p-2 text-right">Total Dû</th>
+                      <th className="p-2 text-right">Payé</th>
+                      <th className="p-2 text-right">Reste à Payer</th>
+                      <th className="p-2 text-center">Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {filteredAccountingStudents.map((st) => (
+                      <tr key={st.id} className="hover:bg-slate-50">
+                        <td className="p-2 font-mono">{st.matricule}</td>
+                        <td className="p-2 font-bold text-[#0f294a]">
+                          {st.lastName} {st.firstName}
+                        </td>
+                        <td className="p-2">
+                          <span className="px-2 py-0.5 rounded bg-slate-200 font-semibold mr-1">
+                            {st.cycle}
+                          </span>
+                          {st.className}
+                        </td>
+                        <td className="p-2 text-right">{st.due.toLocaleString()} F</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">
+                          {st.paid.toLocaleString()} F
+                        </td>
+                        <td className="p-2 text-right font-bold text-red-600">
+                          {st.remaining.toLocaleString()} F
+                        </td>
+                        <td className="p-2 text-center">
+                          {st.remaining === 0 && st.due > 0 ? (
+                            <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
+                              SOLDÉ
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => setPayStudentId(st.id)}
+                              className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold cursor-pointer hover:bg-amber-200"
+                            >
+                              Encaisser
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
         )}
 
-        {/* ONGLET 4 : GESTION DE L'ÉQUIPE & ENSEIGNANTS (EXCLUSIF DIRECTION) */}
+        {/* ONGLET 5 : FRAIS GÉNÉRAUX (DÉPENSES & CHARGES DE L'ÉCOLE) */}
+        {activeTab === 'fraisGeneraux' && canAccessAccounting && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+              <h3 className="font-bold text-lg text-[#0f294a] mb-4 flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-red-600" />
+                Enregistrer un Frais Général ({selectedYear})
+              </h3>
+              <form onSubmit={handleRecordExpense} className="space-y-3 text-sm">
+                <div>
+                  <label className="block font-semibold mb-1">Catégorie de dépense *</label>
+                  <select
+                    value={expCategory}
+                    onChange={(e) => setExpCategory(e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2"
+                  >
+                    <option value="SALAIRES & VACATIONS">Salaires & Vacations Enseignants</option>
+                    <option value="FOURNITURES & PEDAGOGIE">Fournitures, Craies & Imprimerie</option>
+                    <option value="EAU & ELECTRICITE">Eau & Électricité (SBEE / SONEB)</option>
+                    <option value="ENTRETIEN & REPARATIONS">Entretien & Réparations Bâtiments</option>
+                    <option value="ADMINISTRATION & DIVERS">Administration & Frais Divers</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">Libellé exact *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Achat cartons de craies et rames A4"
+                    value={expLabel}
+                    onChange={(e) => setExpLabel(e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">Montant (FCFA) *</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={expAmount}
+                      onChange={(e) => setExpAmount(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Date *</label>
+                    <input
+                      type="date"
+                      required
+                      value={expDate}
+                      onChange={(e) => setExpDate(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">Bénéficiaire</label>
+                    <input
+                      type="text"
+                      placeholder="Nom fournisseur / prof"
+                      value={expBeneficiary}
+                      onChange={(e) => setExpBeneficiary(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Mode règlement</label>
+                    <select
+                      value={expMethod}
+                      onChange={(e) => setExpMethod(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2"
+                    >
+                      <option value="ESPECES">Espèces</option>
+                      <option value="MOBILE_MONEY">Mobile Money</option>
+                      <option value="CHEQUE_VIREMENT">Chèque / Virement</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-[#0f294a] hover:bg-[#183d6d] text-white font-bold py-2.5 rounded-lg cursor-pointer"
+                >
+                  Enregistrer la dépense
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+              <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
+                <h3 className="font-bold text-base text-[#0f294a]">
+                  Journal des Frais Généraux ({selectedYear})
+                </h3>
+                <div className="text-sm font-extrabold text-red-700 bg-red-50 px-3 py-1 rounded-lg">
+                  Total Frais Généraux :{' '}
+                  {(accountingData?.stats.totalExpenses || 0).toLocaleString()} FCFA
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-100 uppercase border-b">
+                      <th className="p-2">Date</th>
+                      <th className="p-2">Catégorie</th>
+                      <th className="p-2">Libellé</th>
+                      <th className="p-2">Bénéficiaire</th>
+                      <th className="p-2 text-right">Montant</th>
+                      <th className="p-2 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {(accountingData?.expenses || []).map((exp) => (
+                      <tr key={exp.id}>
+                        <td className="p-2 whitespace-nowrap">
+                          {new Date(exp.expenseDate).toLocaleDateString('fr-FR')}
+                        </td>
+                        <td className="p-2 font-semibold">{exp.category}</td>
+                        <td className="p-2">{exp.label}</td>
+                        <td className="p-2 text-slate-500">{exp.beneficiary || '-'}</td>
+                        <td className="p-2 text-right font-bold text-red-600">
+                          {exp.amount.toLocaleString()} F
+                        </td>
+                        <td className="p-2 text-center">
+                          <button
+                            onClick={() => handleDeleteExpense(exp.id)}
+                            className="p-1 text-red-600 hover:bg-red-50 rounded cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ONGLET 6 : TABLEAU DE STATISTIQUES D'EFFECTIFS & BILAN FINANCIER */}
+        {activeTab === 'stats' && accountingData && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <h3 className="font-extrabold text-lg text-[#0f294a]">
+                Tableau de Statistiques d'Effectifs & Trésorerie — Année {selectedYear}
+              </h3>
+              <button
+                onClick={() => window.print()}
+                className="inline-flex items-center gap-2 bg-[#0f294a] text-white text-xs font-bold px-3 py-2 rounded-lg cursor-pointer print:hidden"
+              >
+                <Printer className="w-4 h-4 text-amber-400" />
+                Imprimer le bilan
+              </button>
+            </div>
+
+            {/* Cartes d'effectifs Primaire / Secondaire */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-slate-500 uppercase">Effectif Total École</p>
+                <p className="text-2xl font-extrabold text-[#0f294a] mt-1">
+                  {accountingData.stats.totalStudents} élèves
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {accountingData.stats.boysCount} Garçons • {accountingData.stats.girlsCount} Filles
+                </p>
+              </div>
+
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-blue-700 uppercase">Cycle Primaire</p>
+                <p className="text-2xl font-extrabold text-blue-900 mt-1">
+                  {accountingData.stats.primaireStudents} élèves
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">Maternelle / CI au CM2</p>
+              </div>
+
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-amber-700 uppercase">Cycle Secondaire</p>
+                <p className="text-2xl font-extrabold text-amber-900 mt-1">
+                  {accountingData.stats.secondaireStudents} élèves
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">6ème à la Terminale</p>
+              </div>
+
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-emerald-700 uppercase">Solde Net en Caisse</p>
+                <p className="text-xl font-extrabold text-emerald-800 mt-1">
+                  {accountingData.stats.netBalance.toLocaleString()} F
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Recettes ({accountingData.stats.totalCollectedRevenue.toLocaleString()} F) - Frais (
+                  {accountingData.stats.totalExpenses.toLocaleString()} F)
+                </p>
+              </div>
+            </div>
+
+            {/* Tableau détaillé par classe */}
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+              <h4 className="font-bold text-sm text-[#0f294a] mb-3 uppercase">
+                Répartition détaillée des effectifs et encaissements par classe ({selectedYear})
+              </h4>
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-100 uppercase border-b">
+                    <th className="p-2">Cycle</th>
+                    <th className="p-2">Classe</th>
+                    <th className="p-2 text-center">Garçons</th>
+                    <th className="p-2 text-center">Filles</th>
+                    <th className="p-2 text-center">Total Effectif</th>
+                    <th className="p-2 text-right">Attendu (FCFA)</th>
+                    <th className="p-2 text-right">Encaissé (FCFA)</th>
+                    <th className="p-2 text-right">Reste à Recouvrer</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {accountingData.stats.classStats.map((row) => (
+                    <tr key={row.id}>
+                      <td className="p-2 font-semibold">{row.cycle}</td>
+                      <td className="p-2 font-bold text-[#0f294a]">{row.name}</td>
+                      <td className="p-2 text-center">{row.boys}</td>
+                      <td className="p-2 text-center">{row.girls}</td>
+                      <td className="p-2 text-center font-extrabold">{row.studentCount}</td>
+                      <td className="p-2 text-right">{row.expected.toLocaleString()} F</td>
+                      <td className="p-2 text-right font-bold text-emerald-700">
+                        {row.collected.toLocaleString()} F
+                      </td>
+                      <td className="p-2 text-right font-bold text-red-600">
+                        {row.remaining.toLocaleString()} F
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ONGLET 7 : GESTION DE L'ÉQUIPE & ENSEIGNANTS (EXCLUSIF DIRECTION) */}
         {activeTab === 'staff' && isDirection && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
               <h3 className="font-bold text-lg text-[#0f294a] mb-4 flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-amber-500" />
-                Créer un compte Enseignant ou Secrétaire
+                Créer un compte Personnel (Enseignant, Secrétaire, Comptable)
               </h3>
 
               <form onSubmit={handleCreateStaff} className="space-y-4 text-sm">
@@ -1554,7 +2345,7 @@ export function App() {
                   <input
                     type="text"
                     required
-                    placeholder="Ex: Prof. AGBO Kodjo"
+                    placeholder="Ex: M. DOSSOU Marc (Comptable)"
                     value={staffName}
                     onChange={(e) => setStaffName(e.target.value)}
                     className="w-full border rounded-lg px-3 py-2"
@@ -1566,7 +2357,7 @@ export function App() {
                   <input
                     type="email"
                     required
-                    placeholder="Ex: prof.agbo@csbphiladelphia.bj"
+                    placeholder="Ex: comptable@csbphiladelphia.bj"
                     value={staffEmail}
                     onChange={(e) => setStaffEmail(e.target.value)}
                     className="w-full border rounded-lg px-3 py-2"
@@ -1590,12 +2381,15 @@ export function App() {
                     <select
                       value={staffRole}
                       onChange={(e) =>
-                        setStaffRole(e.target.value as 'TEACHER' | 'SECRETARY' | 'ADMIN')
+                        setStaffRole(
+                          e.target.value as 'TEACHER' | 'SECRETARY' | 'ACCOUNTANT' | 'ADMIN'
+                        )
                       }
                       className="w-full border rounded-lg px-3 py-2"
                     >
                       <option value="TEACHER">Enseignant (Saisie Notes)</option>
                       <option value="SECRETARY">Secrétariat (Inscriptions)</option>
+                      <option value="ACCOUNTANT">Comptable (frmInscription & Frais Généraux)</option>
                       <option value="ADMIN">Directeur / Censeur</option>
                     </select>
                   </div>
