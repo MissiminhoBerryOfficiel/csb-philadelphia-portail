@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient, Trimester, ValidationStatus } from '@prisma/client';
+import { PrismaClient, Trimester, ValidationStatus, SchoolCycle } from '@prisma/client';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
@@ -20,61 +20,119 @@ const verifyAuth = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
-// 1. Récupérer toutes les classes et leurs élèves (2026-2027)
-router.get('/classes', verifyAuth, async (_req: Request, res: Response) => {
+// Ordre officiel exact du bulletin CSB Philadelphia
+const OFFICIAL_SUBJECT_ORDER = [
+  'LECT_ORT',
+  'COM_FR',
+  'HIST_GEO',
+  'LV1_ANG',
+  'LV2_ESP',
+  'MATH',
+  'SVT',
+  'PHILO',
+  'PCT',
+  'INFO',
+  'ALL',
+  'ECO',
+  'EPS',
+  'COND',
+];
+
+const sortSubjectsOfficial = <T extends { code: string; name: string }>(subjects: T[]): T[] => {
+  return [...subjects].sort((a, b) => {
+    const idxA = OFFICIAL_SUBJECT_ORDER.indexOf(a.code);
+    const idxB = OFFICIAL_SUBJECT_ORDER.indexOf(b.code);
+    if (idxA === -1 && idxB === -1) return a.name.localeCompare(b.name);
+    if (idxA === -1) return 1;
+    if (idxB === -1) return -1;
+    return idxA - idxB;
+  });
+};
+
+const getOrCreateYear = async (yearName?: string) => {
+  const targetName = yearName || '2026-2027';
+  let year = await prisma.academicYear.findUnique({ where: { name: targetName } });
+  if (!year) {
+    year = await prisma.academicYear.create({
+      data: { name: targetName, isCurrent: targetName === '2026-2027' },
+    });
+  }
+  return year;
+};
+
+// 1. Récupérer toutes les classes et leurs élèves pour l'année sélectionnée
+router.get('/classes', verifyAuth, async (req: Request, res: Response) => {
   try {
-    let year = await prisma.academicYear.findFirst({ where: { isCurrent: true } });
-    if (!year) {
-      year = await prisma.academicYear.create({
-        data: { name: '2026-2027', isCurrent: true },
-      });
-    }
+    const yearName = req.query.year as string | undefined;
+    const year = await getOrCreateYear(yearName);
 
     const classes = await prisma.class.findMany({
       where: { academicYearId: year.id },
       include: {
         students: { orderBy: { lastName: 'asc' } },
-        subjects: { orderBy: { name: 'asc' } },
+        subjects: true,
       },
-      orderBy: { name: 'asc' },
+      orderBy: [{ cycle: 'asc' }, { name: 'asc' }],
     });
-    res.json(classes);
+
+    const formatted = classes.map((cls) => ({
+      ...cls,
+      subjects: sortSubjectsOfficial(cls.subjects),
+    }));
+
+    res.json(formatted);
   } catch (error) {
     res.status(500).json({ message: 'Erreur lors du chargement des classes.', error });
   }
 });
 
-// 2. Créer une nouvelle classe avec les 14 disciplines officielles
+// 2. Créer une nouvelle classe avec les coefficients initialisés à 0
 router.post('/classes', verifyAuth, async (req: Request, res: Response) => {
   try {
-    const { name } = req.body;
-    let year = await prisma.academicYear.findFirst({ where: { isCurrent: true } });
-    if (!year) {
-      year = await prisma.academicYear.create({
-        data: { name: '2026-2027', isCurrent: true },
-      });
-    }
+    const { name, cycle, tuitionFee, inscriptionFee, yearName } = req.body;
+    const year = await getOrCreateYear(yearName);
+    const schoolCycle: SchoolCycle = cycle === 'PRIMAIRE' ? 'PRIMAIRE' : 'SECONDAIRE';
 
     const newClass = await prisma.class.create({
-      data: { name, academicYearId: year.id },
+      data: {
+        name,
+        cycle: schoolCycle,
+        tuitionFee: Number(tuitionFee) || 0,
+        inscriptionFee: Number(inscriptionFee) || 0,
+        academicYearId: year.id,
+      },
     });
 
-    const disciplines = [
-      { name: 'Lecture/Ort.Gr', code: 'LECT_ORT', coefficient: 2 },
-      { name: 'Com. Ecrite Comp. FR', code: 'COM_FR', coefficient: 2 },
-      { name: 'Hist-Géo', code: 'HIST_GEO', coefficient: 2 },
-      { name: 'LV1 /Anglais', code: 'LV1_ANG', coefficient: 2 },
-      { name: 'LV2 / Esp', code: 'LV2_ESP', coefficient: 2 },
-      { name: 'Mathématique', code: 'MATH', coefficient: 3 },
-      { name: 'Biologie / SVT', code: 'SVT', coefficient: 2 },
-      { name: 'Philosophie', code: 'PHILO', coefficient: 2 },
-      { name: 'Physique Chimie / PCT', code: 'PCT', coefficient: 2 },
-      { name: 'Informatique', code: 'INFO', coefficient: 1 },
-      { name: 'Allemand', code: 'ALL', coefficient: 2 },
-      { name: 'Economie', code: 'ECO', coefficient: 2 },
-      { name: 'EPS', code: 'EPS', coefficient: 1 },
-      { name: 'Conduite', code: 'COND', coefficient: 1 },
-    ];
+    const disciplines =
+      schoolCycle === 'PRIMAIRE'
+        ? [
+            { name: 'Communication Orale', code: 'COM_OR', coefficient: 0 },
+            { name: 'Lecture / Écriture', code: 'LECT_ECR', coefficient: 0 },
+            { name: 'Expression Écrite', code: 'EXP_ECR', coefficient: 0 },
+            { name: 'Mathématiques', code: 'MATH', coefficient: 0 },
+            { name: 'Éducation Scientifique et Technologique (EST)', code: 'EST', coefficient: 0 },
+            { name: 'Éducation Sociale (ES)', code: 'ES', coefficient: 0 },
+            { name: 'Anglais (Bilingue)', code: 'ANG_BIL', coefficient: 0 },
+            { name: 'Éducation Artistique (EA)', code: 'EA', coefficient: 0 },
+            { name: 'EPS', code: 'EPS', coefficient: 0 },
+            { name: 'Conduite', code: 'COND', coefficient: 0 },
+          ]
+        : [
+            { name: 'Lecture/Ort.Gr', code: 'LECT_ORT', coefficient: 0 },
+            { name: 'Com. Ecrite Comp. FR', code: 'COM_FR', coefficient: 0 },
+            { name: 'Hist-Géo', code: 'HIST_GEO', coefficient: 0 },
+            { name: 'LV1 /Anglais', code: 'LV1_ANG', coefficient: 0 },
+            { name: 'LV2 / Esp', code: 'LV2_ESP', coefficient: 0 },
+            { name: 'Mathématique', code: 'MATH', coefficient: 0 },
+            { name: 'Biologie / SVT', code: 'SVT', coefficient: 0 },
+            { name: 'Philosophie', code: 'PHILO', coefficient: 0 },
+            { name: 'Physique Chimie / PCT', code: 'PCT', coefficient: 0 },
+            { name: 'Informatique', code: 'INFO', coefficient: 0 },
+            { name: 'Allemand', code: 'ALL', coefficient: 0 },
+            { name: 'Economie', code: 'ECO', coefficient: 0 },
+            { name: 'EPS', code: 'EPS', coefficient: 0 },
+            { name: 'Conduite', code: 'COND', coefficient: 0 },
+          ];
 
     for (const d of disciplines) {
       await prisma.subject.create({
@@ -159,6 +217,7 @@ router.delete('/students/:id', verifyAuth, async (req: Request, res: Response) =
       return res.status(403).json({ message: 'Seul le Fondateur ou le Directeur peut supprimer un élève.' });
     }
     const { id } = req.params;
+    await prisma.payment.deleteMany({ where: { studentId: id } });
     await prisma.grade.deleteMany({ where: { studentId: id } });
     await prisma.reportCard.deleteMany({ where: { studentId: id } });
     await prisma.student.delete({ where: { id } });
@@ -183,11 +242,21 @@ router.get('/grades/:studentId/:trimester', verifyAuth, async (req: Request, res
   }
 });
 
-// 7. Enregistrer & Verrouiller les notes
+// 7. Enregistrer & Verrouiller les notes + Mise à jour du coefficient
 router.post('/grades/save', verifyAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
-    const { studentId, subjectId, trimester, interrogation, devoir1, devoir2, appreciation, lockAfterSave } = req.body;
+    const {
+      studentId,
+      subjectId,
+      trimester,
+      coefficient,
+      interrogation,
+      devoir1,
+      devoir2,
+      appreciation,
+      lockAfterSave,
+    } = req.body;
 
     const existing = await prisma.grade.findUnique({
       where: {
@@ -208,6 +277,13 @@ router.post('/grades/save', verifyAuth, async (req: Request, res: Response) => {
     ) {
       return res.status(403).json({
         message: 'Note verrouillée ! Seul le Fondateur ou le Directeur peut corriger cette note.',
+      });
+    }
+
+    if (coefficient !== undefined && coefficient !== null && !isNaN(Number(coefficient))) {
+      await prisma.subject.update({
+        where: { id: subjectId },
+        data: { coefficient: Number(coefficient) },
       });
     }
 
@@ -250,7 +326,7 @@ router.post('/grades/save', verifyAuth, async (req: Request, res: Response) => {
   }
 });
 
-// 8. Déverrouiller une note (Exclusif Super Admin / Directeur)
+// 8. Déverrouiller une note
 router.post('/grades/unlock/:gradeId', verifyAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -270,7 +346,7 @@ router.post('/grades/unlock/:gradeId', verifyAuth, async (req: Request, res: Res
   }
 });
 
-// 9. Lister tous les membres du personnel (Enseignants, Secrétariat, Direction)
+// 9. Lister tous les membres du personnel
 router.get('/staff', verifyAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -287,7 +363,7 @@ router.get('/staff', verifyAuth, async (req: Request, res: Response) => {
   }
 });
 
-// 10. Créer un nouveau compte Enseignant ou Secrétaire
+// 10. Créer un nouveau compte
 router.post('/staff', verifyAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -325,7 +401,7 @@ router.post('/staff', verifyAuth, async (req: Request, res: Response) => {
   }
 });
 
-// 11. Supprimer un compte Enseignant/Secrétaire
+// 11. Supprimer un compte
 router.delete('/staff/:id', verifyAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
