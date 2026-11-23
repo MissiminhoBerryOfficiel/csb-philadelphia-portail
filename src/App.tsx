@@ -67,9 +67,9 @@ interface Subject {
 interface SchoolClass {
   id: string;
   name: string;
-  cycle: 'PRIMAIRE' | 'SECONDAIRE';
-  tuitionFee: number;
-  inscriptionFee: number;
+  cycle?: 'PRIMAIRE' | 'SECONDAIRE';
+  tuitionFee?: number;
+  inscriptionFee?: number;
   students: Student[];
   subjects: Subject[];
 }
@@ -140,6 +140,7 @@ interface ParentBulletinData {
   trimester: 'T1' | 'T2' | 'T3';
   rows: {
     id: string;
+    code?: string;
     name: string;
     coefficient: number;
     interrogation: number;
@@ -156,6 +157,35 @@ interface ParentBulletinData {
 
 const ACADEMIC_YEARS = ['2026-2027', '2027-2028', '2028-2029', '2029-2030'];
 
+// Ordre officiel exact du bulletin CSB Philadelphia (4e photo)
+const OFFICIAL_SUBJECT_ORDER = [
+  'LECT_ORT',
+  'COM_FR',
+  'HIST_GEO',
+  'LV1_ANG',
+  'LV2_ESP',
+  'MATH',
+  'SVT',
+  'PHILO',
+  'PCT',
+  'INFO',
+  'ALL',
+  'ECO',
+  'EPS',
+  'COND',
+];
+
+const sortSubjectsOfficial = <T extends { code?: string; name: string }>(list: T[]): T[] => {
+  return [...list].sort((a, b) => {
+    const idxA = a.code ? OFFICIAL_SUBJECT_ORDER.indexOf(a.code) : -1;
+    const idxB = b.code ? OFFICIAL_SUBJECT_ORDER.indexOf(b.code) : -1;
+    if (idxA === -1 && idxB === -1) return a.name.localeCompare(b.name);
+    if (idxA === -1) return 1;
+    if (idxB === -1) return -1;
+    return idxA - idxB;
+  });
+};
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
@@ -164,10 +194,8 @@ export function App() {
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Année scolaire active
   const [selectedYear, setSelectedYear] = useState<string>('2026-2027');
 
-  // Mode d'accès sur l'écran d'accueil (Personnel vs Parents)
   const [portalMode, setPortalMode] = useState<'staff' | 'parent'>('staff');
   const [parentMatricule, setParentMatricule] = useState('');
   const [parentTrimester, setParentTrimester] = useState<'T1' | 'T2' | 'T3'>('T1');
@@ -254,14 +282,25 @@ export function App() {
   const loadClasses = async (yr = selectedYear) => {
     try {
       const res = await api.get(`/academic/classes?year=${encodeURIComponent(yr)}`);
-      setClasses(res.data);
-      if (res.data.length > 0) {
+      const sortedClasses: SchoolClass[] = res.data.map((c: SchoolClass) => ({
+        ...c,
+        subjects: sortSubjectsOfficial(c.subjects || []),
+      }));
+      setClasses(sortedClasses);
+
+      if (sortedClasses.length > 0) {
         const targetClass =
-          res.data.find((c: SchoolClass) => c.id === selectedClassId) || res.data[0];
+          sortedClasses.find((c) => c.id === selectedClassId) || sortedClasses[0];
         setSelectedClassId(targetClass.id);
+        if (!feeClassId) {
+          setFeeClassId(targetClass.id);
+          setFeeCycle(targetClass.cycle || 'SECONDAIRE');
+          setFeeInscription(String(targetClass.inscriptionFee || 0));
+          setFeeTuition(String(targetClass.tuitionFee || 0));
+        }
         if (targetClass.students.length > 0) {
           const targetStud =
-            targetClass.students.find((s: Student) => s.id === selectedStudentId) ||
+            targetClass.students.find((s) => s.id === selectedStudentId) ||
             targetClass.students[0];
           setSelectedStudentId(targetStud.id);
         } else {
@@ -289,8 +328,9 @@ export function App() {
         setFeeInscription(String(cls.inscriptionFee || 0));
         setFeeTuition(String(cls.tuitionFee || 0));
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Secours silencieux : on utilisera `classes` déjà chargé pour afficher les inscrits et effectifs
+      setAccountingData(null);
     }
   };
 
@@ -328,7 +368,7 @@ export function App() {
           ? {
               id: found.id,
               subjectId: subj.id,
-              coefficient: subj.coefficient,
+              coefficient: subj.coefficient ?? 0,
               interrogation: found.interrogation ?? 0,
               devoir1: found.devoir1 ?? 0,
               devoir2: found.devoir2 ?? 0,
@@ -337,7 +377,8 @@ export function App() {
             }
           : {
               subjectId: subj.id,
-              coefficient: subj.coefficient,
+              // Coef à 0 par défaut pour que l'enseignant le saisisse lui-même
+              coefficient: 0,
               interrogation: 0,
               devoir1: 0,
               devoir2: 0,
@@ -391,7 +432,10 @@ export function App() {
       const res = await api.get(
         `/report-cards/public/${encodeURIComponent(mat.trim())}?trimester=${trim}`
       );
-      setParentBulletin(res.data);
+      setParentBulletin({
+        ...res.data,
+        rows: sortSubjectsOfficial(res.data.rows || []),
+      });
     } catch (err: unknown) {
       setParentBulletin(null);
       if (axios.isAxiosError(err)) {
@@ -512,7 +556,6 @@ export function App() {
     }
   };
 
-  // Comptabilité : Mise à jour des tarifs d'une classe
   const handleSaveClassFees = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!feeClassId) return;
@@ -528,11 +571,10 @@ export function App() {
       await loadClasses(selectedYear);
       await loadAccounting(selectedYear);
     } catch {
-      setError('Erreur lors de la mise à jour des tarifs.');
+      setError("Veuillez d'abord mettre à jour le backend sur GitHub/Render pour enregistrer les tarifs.");
     }
   };
 
-  // Comptabilité : Encaisser un versement élève (frmInscription)
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!payStudentId || !payAmount) return;
@@ -553,11 +595,10 @@ export function App() {
       setSuccessMsg(`Versement de ${Number(payAmount).toLocaleString()} FCFA enregistré !`);
       await loadAccounting(selectedYear);
     } catch {
-      setError("Erreur lors de l'enregistrement du paiement.");
+      setError("Veuillez d'abord mettre à jour le backend sur GitHub/Render pour encaisser.");
     }
   };
 
-  // Comptabilité : Enregistrer une dépense (Frais Généraux)
   const handleRecordExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!expLabel || !expAmount) return;
@@ -581,7 +622,7 @@ export function App() {
       setSuccessMsg('Dépense enregistrée dans les Frais Généraux !');
       await loadAccounting(selectedYear);
     } catch {
-      setError("Erreur lors de l'enregistrement de la dépense.");
+      setError("Veuillez d'abord mettre à jour le backend sur GitHub/Render pour enregistrer les frais.");
     }
   };
 
@@ -693,7 +734,7 @@ export function App() {
     }
   };
 
-  // ÉCRAN D'ACCUEIL : ESPACE PERSONNEL + ESPACE PARENTS (MATRICULE)
+  // ÉCRAN D'ACCUEIL : ESPACE PERSONNEL + ESPACE PARENTS
   if (!user) {
     if (portalMode === 'parent' && parentBulletin) {
       return (
@@ -1030,16 +1071,17 @@ export function App() {
     );
   }
 
-  const subjects = currentClass?.subjects || [];
+  // Matières triées dans l'ordre exact de la 4e photo
+  const subjects = sortSubjectsOfficial(currentClass?.subjects || []);
   const bulletinRows = subjects.map((s) => {
     const g = gradesMap[s.id] || {
-      coefficient: s.coefficient,
+      coefficient: 0,
       interrogation: 0,
       devoir1: 0,
       devoir2: 0,
       appreciation: '',
     };
-    const coef = g.coefficient ?? s.coefficient;
+    const coef = g.coefficient ?? 0;
     const moyDev = (g.devoir1 + g.devoir2) / 2;
     const moyTrim = Number(((g.interrogation + 2 * moyDev) / 3).toFixed(2));
     const moyCoef = Number((moyTrim * coef).toFixed(2));
@@ -1050,8 +1092,13 @@ export function App() {
   const totalMoyCoef = Number(bulletinRows.reduce((acc, r) => acc + r.moyCoef, 0).toFixed(2));
   const moyenneTrimestrielle = totalCoef > 0 ? Number((totalMoyCoef / totalCoef).toFixed(2)) : 0;
 
-  // Liste à plat des élèves pour frmInscription
-  const allAccountingStudents = (accountingData?.classes || []).flatMap((cls) =>
+  // Source unifiée : utilise accountingData si disponible, sinon lit directement `classes` (les élèves inscrits dans Inscriptions & Classes)
+  const effectiveClasses: SchoolClass[] =
+    accountingData?.classes && accountingData.classes.length > 0
+      ? accountingData.classes
+      : classes;
+
+  const allAccountingStudents = effectiveClasses.flatMap((cls) =>
     cls.students.map((st) => {
       const due = (cls.inscriptionFee || 0) + (cls.tuitionFee || 0);
       const paid = (st.payments || []).reduce((acc, p) => acc + p.amount, 0);
@@ -1059,7 +1106,7 @@ export function App() {
         ...st,
         classId: cls.id,
         className: cls.name,
-        cycle: cls.cycle,
+        cycle: cls.cycle || 'SECONDAIRE',
         due,
         paid,
         remaining: Math.max(0, due - paid),
@@ -1078,6 +1125,46 @@ export function App() {
       st.className.toLowerCase().includes(q);
     return matchesCycle && matchesSearch;
   });
+
+  // Calcul des statistiques en temps réel à partir de effectiveClasses
+  const computedClassStats = effectiveClasses.map((cls) => {
+    const count = cls.students.length;
+    const boys = cls.students.filter((s) => s.gender === 'M').length;
+    const girls = cls.students.filter((s) => s.gender === 'F').length;
+    const expected = count * ((cls.tuitionFee || 0) + (cls.inscriptionFee || 0));
+    const collected = cls.students.reduce(
+      (sum, st) => sum + (st.payments || []).reduce((pSum, p) => pSum + p.amount, 0),
+      0
+    );
+    return {
+      id: cls.id,
+      name: cls.name,
+      cycle: cls.cycle || 'SECONDAIRE',
+      studentCount: count,
+      boys,
+      girls,
+      expected,
+      collected,
+      remaining: Math.max(0, expected - collected),
+    };
+  });
+
+  const statsSummary = {
+    totalStudents: computedClassStats.reduce((s, c) => s + c.studentCount, 0),
+    primaireStudents: computedClassStats
+      .filter((c) => c.cycle === 'PRIMAIRE')
+      .reduce((s, c) => s + c.studentCount, 0),
+    secondaireStudents: computedClassStats
+      .filter((c) => c.cycle !== 'PRIMAIRE')
+      .reduce((s, c) => s + c.studentCount, 0),
+    boysCount: computedClassStats.reduce((s, c) => s + c.boys, 0),
+    girlsCount: computedClassStats.reduce((s, c) => s + c.girls, 0),
+    totalCollectedRevenue: computedClassStats.reduce((s, c) => s + c.collected, 0),
+    totalExpenses: accountingData?.stats.totalExpenses || 0,
+    netBalance:
+      computedClassStats.reduce((s, c) => s + c.collected, 0) -
+      (accountingData?.stats.totalExpenses || 0),
+  };
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col md:flex-row">
@@ -1103,7 +1190,6 @@ export function App() {
             </div>
           </div>
 
-          {/* Sélecteur d'année scolaire */}
           <div className="px-4 py-3 border-b border-slate-700 bg-[#0a1d36]">
             <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-amber-300 mb-1">
               <Calendar className="w-3.5 h-3.5" />
@@ -1249,7 +1335,6 @@ export function App() {
           </div>
         )}
 
-        {/* Barre de sélection Classe / Élève / Trimestre pour Notes & Bulletins */}
         {(activeTab === 'inscription' || activeTab === 'grades' || activeTab === 'bulletins') && (
           <div className="bg-white p-4 rounded-xl border border-slate-200 mb-6 flex flex-wrap gap-4 items-center justify-between print:hidden">
             <div className="flex flex-wrap gap-3 items-center">
@@ -1269,7 +1354,7 @@ export function App() {
                 >
                   {classes.map((c) => (
                     <option key={c.id} value={c.id}>
-                      [{c.cycle}] {c.name} ({c.students.length} élèves)
+                      [{c.cycle || 'SECONDAIRE'}] {c.name} ({c.students.length} élèves)
                     </option>
                   ))}
                 </select>
@@ -1526,7 +1611,7 @@ export function App() {
           </div>
         )}
 
-        {/* ONGLET 2 : SAISIE & VERROUILLAGE DES NOTES + COEFFICIENTS MODIFIABLES */}
+        {/* ONGLET 2 : SAISIE & VERROUILLAGE DES NOTES + COEFFICIENTS (A 0 PAR DEFAUT) */}
         {activeTab === 'grades' && (
           <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200">
             <div className="mb-4">
@@ -1534,7 +1619,7 @@ export function App() {
                 Saisie des Notes & Coefficients — {currentStudent?.lastName} {currentStudent?.firstName}
               </h3>
               <p className="text-xs text-slate-500">
-                Vous pouvez ajuster le coefficient de chaque matière selon la classe ({currentClass?.name}) directement dans la colonne COEF avant de valider.
+                Les coefficients démarrent à 0 : chaque enseignant saisit le coefficient de sa matière ({currentClass?.name}) en même temps que les notes.
               </p>
             </div>
 
@@ -1554,7 +1639,7 @@ export function App() {
                 <tbody className="divide-y">
                   {subjects.map((subj) => {
                     const g = gradesMap[subj.id] || {
-                      coefficient: subj.coefficient,
+                      coefficient: 0,
                       interrogation: 0,
                       devoir1: 0,
                       devoir2: 0,
@@ -1804,7 +1889,6 @@ export function App() {
         {/* ONGLET 4 : frmInscription (SUIVI COMPTABLE DES INSCRIPTIONS & SCOLARITÉ) */}
         {activeTab === 'frmInscription' && (
           <div className="space-y-6">
-            {/* Reçu imprimable si un paiement vient d'être enregistré */}
             {printedReceipt && (
               <div className="bg-white max-w-lg mx-auto p-5 border-2 border-black text-xs space-y-2 shadow-md">
                 <div className="flex justify-between items-center border-b border-black pb-2">
@@ -1847,7 +1931,6 @@ export function App() {
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 print:hidden">
-              {/* Formulaire d'encaissement frmInscription */}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                 <h3 className="font-bold text-lg text-[#0f294a] mb-3 flex items-center gap-2">
                   <Wallet className="w-5 h-5 text-emerald-600" />
@@ -1855,7 +1938,9 @@ export function App() {
                 </h3>
                 <form onSubmit={handleRecordPayment} className="space-y-3 text-sm">
                   <div>
-                    <label className="block font-semibold mb-1">Élève inscrit *</label>
+                    <label className="block font-semibold mb-1">
+                      Élève inscrit ({allAccountingStudents.length}) *
+                    </label>
                     <select
                       required
                       value={payStudentId}
@@ -1924,7 +2009,6 @@ export function App() {
                 </form>
               </div>
 
-              {/* Paramétrage des frais par classe (Primaire / Secondaire) */}
               {canAccessAccounting && (
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <h3 className="font-bold text-base text-[#0f294a] mb-3">
@@ -1937,19 +2021,17 @@ export function App() {
                         <select
                           value={feeClassId}
                           onChange={(e) => {
-                            const cls = accountingData?.classes.find(
-                              (c) => c.id === e.target.value
-                            );
+                            const cls = effectiveClasses.find((c) => c.id === e.target.value);
                             setFeeClassId(e.target.value);
                             if (cls) {
-                              setFeeCycle(cls.cycle);
-                              setFeeInscription(String(cls.inscriptionFee));
-                              setFeeTuition(String(cls.tuitionFee));
+                              setFeeCycle(cls.cycle || 'SECONDAIRE');
+                              setFeeInscription(String(cls.inscriptionFee || 0));
+                              setFeeTuition(String(cls.tuitionFee || 0));
                             }
                           }}
                           className="w-full border rounded-lg px-3 py-2 font-semibold"
                         >
-                          {accountingData?.classes.map((c) => (
+                          {effectiveClasses.map((c) => (
                             <option key={c.id} value={c.id}>
                               {c.name}
                             </option>
@@ -2003,7 +2085,6 @@ export function App() {
               )}
             </div>
 
-            {/* Tableau de suivi en temps réel de tous les élèves inscrits */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 print:hidden">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <h3 className="font-bold text-base text-[#0f294a]">
@@ -2087,7 +2168,7 @@ export function App() {
           </div>
         )}
 
-        {/* ONGLET 5 : FRAIS GÉNÉRAUX (DÉPENSES & CHARGES DE L'ÉCOLE) */}
+        {/* ONGLET 5 : FRAIS GÉNÉRAUX */}
         {activeTab === 'fraisGeneraux' && canAccessAccounting && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -2187,8 +2268,7 @@ export function App() {
                   Journal des Frais Généraux ({selectedYear})
                 </h3>
                 <div className="text-sm font-extrabold text-red-700 bg-red-50 px-3 py-1 rounded-lg">
-                  Total Frais Généraux :{' '}
-                  {(accountingData?.stats.totalExpenses || 0).toLocaleString()} FCFA
+                  Total Frais Généraux : {statsSummary.totalExpenses.toLocaleString()} FCFA
                 </div>
               </div>
 
@@ -2234,7 +2314,7 @@ export function App() {
         )}
 
         {/* ONGLET 6 : TABLEAU DE STATISTIQUES D'EFFECTIFS & BILAN FINANCIER */}
-        {activeTab === 'stats' && accountingData && (
+        {activeTab === 'stats' && (
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h3 className="font-extrabold text-lg text-[#0f294a]">
@@ -2249,22 +2329,21 @@ export function App() {
               </button>
             </div>
 
-            {/* Cartes d'effectifs Primaire / Secondaire */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <p className="text-xs font-bold text-slate-500 uppercase">Effectif Total École</p>
                 <p className="text-2xl font-extrabold text-[#0f294a] mt-1">
-                  {accountingData.stats.totalStudents} élèves
+                  {statsSummary.totalStudents} élèves
                 </p>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  {accountingData.stats.boysCount} Garçons • {accountingData.stats.girlsCount} Filles
+                  {statsSummary.boysCount} Garçons • {statsSummary.girlsCount} Filles
                 </p>
               </div>
 
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <p className="text-xs font-bold text-blue-700 uppercase">Cycle Primaire</p>
                 <p className="text-2xl font-extrabold text-blue-900 mt-1">
-                  {accountingData.stats.primaireStudents} élèves
+                  {statsSummary.primaireStudents} élèves
                 </p>
                 <p className="text-[11px] text-slate-500 mt-1">Maternelle / CI au CM2</p>
               </div>
@@ -2272,7 +2351,7 @@ export function App() {
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <p className="text-xs font-bold text-amber-700 uppercase">Cycle Secondaire</p>
                 <p className="text-2xl font-extrabold text-amber-900 mt-1">
-                  {accountingData.stats.secondaireStudents} élèves
+                  {statsSummary.secondaireStudents} élèves
                 </p>
                 <p className="text-[11px] text-slate-500 mt-1">6ème à la Terminale</p>
               </div>
@@ -2280,16 +2359,15 @@ export function App() {
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <p className="text-xs font-bold text-emerald-700 uppercase">Solde Net en Caisse</p>
                 <p className="text-xl font-extrabold text-emerald-800 mt-1">
-                  {accountingData.stats.netBalance.toLocaleString()} F
+                  {statsSummary.netBalance.toLocaleString()} F
                 </p>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Recettes ({accountingData.stats.totalCollectedRevenue.toLocaleString()} F) - Frais (
-                  {accountingData.stats.totalExpenses.toLocaleString()} F)
+                  Recettes ({statsSummary.totalCollectedRevenue.toLocaleString()} F) - Frais (
+                  {statsSummary.totalExpenses.toLocaleString()} F)
                 </p>
               </div>
             </div>
 
-            {/* Tableau détaillé par classe */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
               <h4 className="font-bold text-sm text-[#0f294a] mb-3 uppercase">
                 Répartition détaillée des effectifs et encaissements par classe ({selectedYear})
@@ -2308,7 +2386,7 @@ export function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {accountingData.stats.classStats.map((row) => (
+                  {computedClassStats.map((row) => (
                     <tr key={row.id}>
                       <td className="p-2 font-semibold">{row.cycle}</td>
                       <td className="p-2 font-bold text-[#0f294a]">{row.name}</td>
@@ -2330,7 +2408,7 @@ export function App() {
           </div>
         )}
 
-        {/* ONGLET 7 : GESTION DE L'ÉQUIPE & ENSEIGNANTS (EXCLUSIF DIRECTION) */}
+        {/* ONGLET 7 : GESTION DE L'ÉQUIPE & ENSEIGNANTS */}
         {activeTab === 'staff' && isDirection && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
