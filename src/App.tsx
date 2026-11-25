@@ -3,7 +3,7 @@ import {
   LogOut, Users, BookOpen, FileText, Lock, Unlock, Mail, CheckCircle2,
   AlertCircle, Printer, UserPlus, PlusCircle, Save, Trash2, Edit3,
   ShieldCheck, Search, GraduationCap, ArrowLeft, Wallet, Receipt,
-  BarChart3, Calendar,
+  BarChart3, Calendar, Sliders,
 } from 'lucide-react';
 import axios from 'axios';
 import api from './services/api';
@@ -15,6 +15,14 @@ interface User {
   email: string;
   role: 'SUPER_ADMIN' | 'ADMIN' | 'TEACHER' | 'SECRETARY' | 'ACCOUNTANT';
   phone?: string;
+  subjectsTaught?: {
+    subjectId: string;
+    subject: {
+      id: string;
+      name: string;
+      class: { id: string; name: string };
+    };
+  }[];
 }
 
 interface PaymentRecord {
@@ -214,12 +222,16 @@ export function App() {
   const [expReference, setExpReference] = useState('');
   const [expDate, setExpDate] = useState(new Date().toISOString().split('T')[0]);
 
+  // Gestion personnel + modification + attribution classes/matières
   const [staffList, setStaffList] = useState<User[]>([]);
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
   const [staffName, setStaffName] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
   const [staffPassword, setStaffPassword] = useState('');
   const [staffRole, setStaffRole] = useState<'TEACHER' | 'SECRETARY' | 'ACCOUNTANT' | 'ADMIN'>('TEACHER');
   const [staffPhone, setStaffPhone] = useState('');
+  const [assigningTeacher, setAssigningTeacher] = useState<User | null>(null);
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[]>([]);
 
   const [gradesMap, setGradesMap] = useState<Record<string, GradeRecord>>({});
 
@@ -331,7 +343,7 @@ export function App() {
             }
           : {
               subjectId: subj.id,
-              coefficient: 0,
+              coefficient: subj.coefficient ?? 0,
               interrogation: 0,
               devoir1: 0,
               devoir2: 0,
@@ -419,6 +431,42 @@ export function App() {
       setSelectedClassId(res.data.id);
     } catch {
       setError('Impossible de créer la classe.');
+    }
+  };
+
+  const handleDeleteClass = async (cls: SchoolClass) => {
+    if (!window.confirm(`Supprimer définitivement la classe "${cls.name}" et ses ${cls.students.length} élèves ?`)) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      await api.delete(`/academic/classes/${cls.id}`);
+      setSuccessMsg(`Classe "${cls.name}" supprimée avec succès.`);
+      setSelectedClassId('');
+      await loadClasses(selectedYear);
+      await loadAccounting(selectedYear);
+    } catch {
+      setError('Impossible de supprimer cette classe (vérifiez que le backend est à jour).');
+    }
+  };
+
+  const handleResetClassCoefs = async () => {
+    if (!currentClass) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      await api.post(`/academic/classes/${currentClass.id}/reset-coefs`);
+      setSuccessMsg(`Tous les coefficients de la classe ${currentClass.name} ont été remis à 0 !`);
+      await loadClasses(selectedYear);
+    } catch {
+      // Secours local immédiat même avant redéploiement backend
+      setGradesMap((prev) => {
+        const next: Record<string, GradeRecord> = {};
+        Object.keys(prev).forEach((k) => {
+          next[k] = { ...prev[k], coefficient: 0 };
+        });
+        return next;
+      });
+      setSuccessMsg('Coefficients remis à 0 à l’écran.');
     }
   };
 
@@ -558,22 +606,71 @@ export function App() {
     }
   };
 
-  const handleCreateStaff = async (e: React.FormEvent) => {
+  const handleCreateOrUpdateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
     try {
-      const res = await api.post('/academic/staff', {
-        fullName: staffName, email: staffEmail, password: staffPassword, role: staffRole, phone: staffPhone,
-      });
-      setSuccessMsg(`Compte créé pour ${res.data.fullName} (${res.data.email}) !`);
+      if (editingStaffId) {
+        const res = await api.put(`/academic/staff/${editingStaffId}`, {
+          fullName: staffName,
+          email: staffEmail,
+          password: staffPassword,
+          role: staffRole,
+          phone: staffPhone,
+        });
+        setSuccessMsg(`Coordonnées et accès de ${res.data.fullName} mis à jour !`);
+        setEditingStaffId(null);
+      } else {
+        const res = await api.post('/academic/staff', {
+          fullName: staffName,
+          email: staffEmail,
+          password: staffPassword,
+          role: staffRole,
+          phone: staffPhone,
+        });
+        setSuccessMsg(`Compte créé pour ${res.data.fullName} (${res.data.email}) !`);
+      }
       setStaffName('');
       setStaffEmail('');
       setStaffPassword('');
       setStaffPhone('');
       await loadStaff();
     } catch (err: unknown) {
-      if (axios.isAxiosError(err)) setError(err.response?.data?.message || 'Erreur lors de la création.');
+      if (axios.isAxiosError(err)) setError(err.response?.data?.message || 'Erreur lors de la sauvegarde.');
+    }
+  };
+
+  const startEditStaff = (member: User) => {
+    setEditingStaffId(member.id);
+    setStaffName(member.fullName);
+    setStaffEmail(member.email);
+    setStaffPassword('');
+    setStaffRole(member.role === 'SUPER_ADMIN' ? 'ADMIN' : member.role);
+    setStaffPhone(member.phone || '');
+    setError('');
+    setSuccessMsg('');
+  };
+
+  const openAssignClassesModal = (member: User) => {
+    setAssigningTeacher(member);
+    const existingIds = (member.subjectsTaught || []).map((st) => st.subjectId);
+    setSelectedSubjectIds(existingIds);
+  };
+
+  const handleSaveTeacherAssignments = async () => {
+    if (!assigningTeacher) return;
+    setError('');
+    setSuccessMsg('');
+    try {
+      await api.post(`/academic/staff/${assigningTeacher.id}/assignments`, {
+        subjectIds: selectedSubjectIds,
+      });
+      setSuccessMsg(`Classes et matières enregistrées pour ${assigningTeacher.fullName} !`);
+      setAssigningTeacher(null);
+      await loadStaff();
+    } catch {
+      setError("Erreur lors de l'attribution des classes.");
     }
   };
 
@@ -977,7 +1074,9 @@ export function App() {
           <div className="bg-white p-4 rounded-xl border border-slate-200 mb-6 flex flex-wrap gap-4 items-center justify-between print:hidden">
             <div className="flex flex-wrap gap-3 items-center">
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase">Classe ({selectedYear})</label>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase">
+                  {user.role === 'TEACHER' ? 'Mes Classes Attribuées' : `Classe (${selectedYear})`}
+                </label>
                 <select
                   value={selectedClassId}
                   onChange={(e) => {
@@ -1009,6 +1108,7 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 1 : INSCRIPTION & CLASSES (AVEC SUPPRESSION DE CLASSE) */}
         {activeTab === 'inscription' && canInscribe && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -1095,9 +1195,19 @@ export function App() {
               </div>
 
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                <h3 className="font-bold text-base text-[#0f294a] mb-3 flex items-center gap-2">
-                  <Users className="w-5 h-5 text-[#0f294a]" /> Inscrits en {currentClass?.name} ({currentClass?.students.length || 0})
-                </h3>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <h3 className="font-bold text-base text-[#0f294a] flex items-center gap-2">
+                    <Users className="w-5 h-5 text-[#0f294a]" /> Inscrits en {currentClass?.name} ({currentClass?.students.length || 0})
+                  </h3>
+                  {isDirection && currentClass && (
+                    <button
+                      onClick={() => handleDeleteClass(currentClass)}
+                      className="inline-flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold px-2.5 py-1 rounded-lg cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Supprimer cette classe
+                    </button>
+                  )}
+                </div>
                 <ul className="divide-y text-sm">
                   {currentClass?.students.map((st) => (
                     <li key={st.id} className="py-2.5 flex justify-between items-center gap-2">
@@ -1117,80 +1227,100 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 2 : SAISIE DES NOTES & COEFFICIENTS */}
         {activeTab === 'grades' && (
           <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200">
-            <div className="mb-4">
-              <h3 className="font-bold text-lg text-[#0f294a]">
-                Saisie des Notes & Coefficients — {currentStudent?.lastName} {currentStudent?.firstName}
-              </h3>
-              <p className="text-xs text-slate-500">
-                Les coefficients démarrent à 0 : chaque enseignant saisit le coefficient de sa matière ({currentClass?.name}) en même temps que les notes.
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <h3 className="font-bold text-lg text-[#0f294a]">
+                  Saisie des Notes & Coefficients — {currentStudent?.lastName} {currentStudent?.firstName}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {user.role === 'TEACHER'
+                    ? 'Espace enseignant : saisissez le coefficient et les notes uniquement pour vos matières attribuées.'
+                    : `Chaque enseignant saisit le coefficient de sa matière (${currentClass?.name}).`}
+                </p>
+              </div>
+              {isDirection && currentClass && (
+                <button
+                  onClick={handleResetClassCoefs}
+                  className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer"
+                >
+                  Mettre tous les coefs à 0
+                </button>
+              )}
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs md:text-sm">
-                <thead>
-                  <tr className="bg-slate-100 text-slate-700 uppercase border-b">
-                    <th className="py-2 px-2">Discipline</th>
-                    <th className="py-2 px-2 text-center">Coef</th>
-                    <th className="py-2 px-2 text-center">Interro</th>
-                    <th className="py-2 px-2 text-center">Dev 1</th>
-                    <th className="py-2 px-2 text-center">Dev 2</th>
-                    <th className="py-2 px-2">Appréciation</th>
-                    <th className="py-2 px-2 text-center">Action / Statut</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {subjects.map((subj) => {
-                    const g = gradesMap[subj.id] || { coefficient: 0, interrogation: 0, devoir1: 0, devoir2: 0, appreciation: '', status: 'DRAFT' };
-                    const isLocked = g.status === 'LOCKED' || g.status === 'VALIDATED';
-                    const readOnly = isLocked && !isDirection;
+            {subjects.length === 0 ? (
+              <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg text-sm text-amber-900">
+                Aucune matière attribuée sur cette classe pour le moment. Contactez la Direction pour qu'elle vous attribue vos classes et matières dans <strong>Équipe & Enseignants</strong>.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs md:text-sm">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 uppercase border-b">
+                      <th className="py-2 px-2">Discipline</th>
+                      <th className="py-2 px-2 text-center">Coef</th>
+                      <th className="py-2 px-2 text-center">Interro</th>
+                      <th className="py-2 px-2 text-center">Dev 1</th>
+                      <th className="py-2 px-2 text-center">Dev 2</th>
+                      <th className="py-2 px-2">Appréciation</th>
+                      <th className="py-2 px-2 text-center">Action / Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {subjects.map((subj) => {
+                      const g = gradesMap[subj.id] || { coefficient: 0, interrogation: 0, devoir1: 0, devoir2: 0, appreciation: '', status: 'DRAFT' };
+                      const isLocked = g.status === 'LOCKED' || g.status === 'VALIDATED';
+                      const readOnly = isLocked && !isDirection;
 
-                    return (
-                      <tr key={subj.id} className={isLocked ? 'bg-slate-50' : ''}>
-                        <td className="py-2 px-2 font-semibold text-[#0f294a]">{subj.name}</td>
-                        <td className="py-2 px-2 text-center">
-                          <input type="number" step="1" min="0" disabled={readOnly} value={g.coefficient} onChange={(e) => updateLocalGrade(subj.id, 'coefficient', e.target.value)} className="w-14 border border-amber-400 bg-amber-50/40 font-bold text-[#0f294a] rounded px-1 py-1 text-center disabled:bg-slate-200" />
-                        </td>
-                        <td className="py-2 px-2 text-center">
-                          <input type="number" step="0.25" disabled={readOnly} value={g.interrogation} onChange={(e) => updateLocalGrade(subj.id, 'interrogation', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
-                        </td>
-                        <td className="py-2 px-2 text-center">
-                          <input type="number" step="0.25" disabled={readOnly} value={g.devoir1} onChange={(e) => updateLocalGrade(subj.id, 'devoir1', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
-                        </td>
-                        <td className="py-2 px-2 text-center">
-                          <input type="number" step="0.25" disabled={readOnly} value={g.devoir2} onChange={(e) => updateLocalGrade(subj.id, 'devoir2', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
-                        </td>
-                        <td className="py-2 px-2">
-                          <input type="text" disabled={readOnly} placeholder="Bien, Très Bien..." value={g.appreciation} onChange={(e) => updateLocalGrade(subj.id, 'appreciation', e.target.value)} className="w-28 border rounded px-2 py-1 disabled:bg-slate-200" />
-                        </td>
-                        <td className="py-2 px-2 text-center whitespace-nowrap">
-                          {isLocked ? (
-                            <div className="inline-flex items-center gap-1">
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded"><Lock className="w-3 h-3" /> Verrouillé</span>
-                              {isDirection && (
-                                <>
-                                  <button onClick={() => saveGradeRow(subj.id, true)} className="p-1 bg-[#0f294a] text-white rounded cursor-pointer"><Save className="w-3.5 h-3.5" /></button>
-                                  <button onClick={() => unlockGradeRow(g.id)} className="p-1 bg-emerald-600 text-white rounded cursor-pointer"><Unlock className="w-3.5 h-3.5" /></button>
-                                </>
-                              )}
-                            </div>
-                          ) : (
-                            <button onClick={() => saveGradeRow(subj.id, true)} className="inline-flex items-center gap-1 bg-[#0f294a] hover:bg-[#183d6d] text-white text-xs font-bold px-2.5 py-1 rounded cursor-pointer">
-                              <Save className="w-3 h-3 text-amber-400" /> Valider & Verrouiller
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                      return (
+                        <tr key={subj.id} className={isLocked ? 'bg-slate-50' : ''}>
+                          <td className="py-2 px-2 font-semibold text-[#0f294a]">{subj.name}</td>
+                          <td className="py-2 px-2 text-center">
+                            <input type="number" step="1" min="0" disabled={readOnly} value={g.coefficient} onChange={(e) => updateLocalGrade(subj.id, 'coefficient', e.target.value)} className="w-14 border border-amber-400 bg-amber-50/40 font-bold text-[#0f294a] rounded px-1 py-1 text-center disabled:bg-slate-200" />
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            <input type="number" step="0.25" disabled={readOnly} value={g.interrogation} onChange={(e) => updateLocalGrade(subj.id, 'interrogation', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            <input type="number" step="0.25" disabled={readOnly} value={g.devoir1} onChange={(e) => updateLocalGrade(subj.id, 'devoir1', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            <input type="number" step="0.25" disabled={readOnly} value={g.devoir2} onChange={(e) => updateLocalGrade(subj.id, 'devoir2', e.target.value)} className="w-16 border rounded px-1 py-1 text-center disabled:bg-slate-200" />
+                          </td>
+                          <td className="py-2 px-2">
+                            <input type="text" disabled={readOnly} placeholder="Bien, Très Bien..." value={g.appreciation} onChange={(e) => updateLocalGrade(subj.id, 'appreciation', e.target.value)} className="w-28 border rounded px-2 py-1 disabled:bg-slate-200" />
+                          </td>
+                          <td className="py-2 px-2 text-center whitespace-nowrap">
+                            {isLocked ? (
+                              <div className="inline-flex items-center gap-1">
+                                <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded"><Lock className="w-3 h-3" /> Verrouillé</span>
+                                {isDirection && (
+                                  <>
+                                    <button onClick={() => saveGradeRow(subj.id, true)} className="p-1 bg-[#0f294a] text-white rounded cursor-pointer"><Save className="w-3.5 h-3.5" /></button>
+                                    <button onClick={() => unlockGradeRow(g.id)} className="p-1 bg-emerald-600 text-white rounded cursor-pointer"><Unlock className="w-3.5 h-3.5" /></button>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <button onClick={() => saveGradeRow(subj.id, true)} className="inline-flex items-center gap-1 bg-[#0f294a] hover:bg-[#183d6d] text-white text-xs font-bold px-2.5 py-1 rounded cursor-pointer">
+                                <Save className="w-3 h-3 text-amber-400" /> Valider & Verrouiller
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
+        {/* ONGLET 3 : BULLETIN OFFICIEL */}
         {activeTab === 'bulletins' && currentStudent && (
           <div className="space-y-4">
             <div className="flex justify-end print:hidden">
@@ -1274,6 +1404,7 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 4 : frmInscription */}
         {activeTab === 'frmInscription' && (
           <div className="space-y-6">
             {printedReceipt && (
@@ -1445,6 +1576,7 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 5 : FRAIS GÉNÉRAUX */}
         {activeTab === 'fraisGeneraux' && canAccessAccounting && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -1535,6 +1667,7 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 6 : STATISTIQUES & EFFECTIFS */}
         {activeTab === 'stats' && (
           <div className="space-y-6">
             <div className="flex justify-between items-center">
@@ -1605,59 +1738,184 @@ export function App() {
           </div>
         )}
 
+        {/* ONGLET 7 : ÉQUIPE & ENSEIGNANTS (CREATION + MODIFICATION + ATTRIBUTION CLASSES/MATIERES) */}
         {activeTab === 'staff' && isDirection && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-              <h3 className="font-bold text-lg text-[#0f294a] mb-4 flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-amber-500" /> Créer un compte Personnel
-              </h3>
-              <form onSubmit={handleCreateStaff} className="space-y-4 text-sm">
-                <div>
-                  <label className="block font-semibold mb-1">Nom & Prénoms *</label>
-                  <input type="text" required placeholder="Ex: M. DOSSOU Marc (Comptable)" value={staffName} onChange={(e) => setStaffName(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
+          <div className="space-y-6">
+            {assigningTeacher && (
+              <div className="bg-white p-6 rounded-xl shadow-md border-2 border-amber-400">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-bold text-base text-[#0f294a] flex items-center gap-2">
+                    <Sliders className="w-5 h-5 text-amber-600" />
+                    Attribuer les classes et matières de : {assigningTeacher.fullName}
+                  </h3>
+                  <button onClick={() => setAssigningTeacher(null)} className="text-xs font-bold text-slate-500 hover:text-black cursor-pointer">
+                    Fermer
+                  </button>
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">Email de connexion *</label>
-                  <input type="email" required value={staffEmail} onChange={(e) => setStaffEmail(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold mb-1">Mot de passe *</label>
-                    <input type="text" required value={staffPassword} onChange={(e) => setStaffPassword(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Rôle *</label>
-                    <select value={staffRole} onChange={(e) => setStaffRole(e.target.value as 'TEACHER' | 'SECRETARY' | 'ACCOUNTANT' | 'ADMIN')} className="w-full border rounded-lg px-3 py-2">
-                      <option value="TEACHER">Enseignant (Saisie Notes)</option>
-                      <option value="SECRETARY">Secrétariat (Inscriptions)</option>
-                      <option value="ACCOUNTANT">Comptable (frmInscription & Frais Généraux)</option>
-                      <option value="ADMIN">Directeur / Censeur</option>
-                    </select>
-                  </div>
-                </div>
-                <button type="submit" className="w-full bg-[#0f294a] hover:bg-[#183d6d] text-white font-bold py-2.5 rounded-lg cursor-pointer">
-                  Créer l'accès de travail
-                </button>
-              </form>
-            </div>
+                <p className="text-xs text-slate-600 mb-4">
+                  Cochez les matières que cet enseignant enseigne dans ses différentes classes (1, 2 ou 3 classes). Lorsqu'il se connectera, il ne verra que ces classes et ces matières.
+                </p>
 
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-              <h3 className="font-bold text-base text-[#0f294a] mb-3 flex items-center gap-2">
-                <Users className="w-5 h-5 text-[#0f294a]" /> Personnel ayant accès ({staffList.length})
-              </h3>
-              <ul className="divide-y text-sm">
-                {staffList.map((member) => (
-                  <li key={member.id} className="py-2.5 flex justify-between items-center gap-2">
-                    <div>
-                      <strong className="block text-[#0f294a]">{member.fullName}</strong>
-                      <span className="text-xs text-slate-500">{member.email} • <span className="font-bold text-amber-700">{member.role}</span></span>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-h-80 overflow-y-auto pr-1">
+                  {classes.map((cls) => (
+                    <div key={cls.id} className="border rounded-lg p-3 bg-slate-50">
+                      <p className="font-bold text-xs text-[#0f294a] uppercase border-b pb-1 mb-2">
+                        {cls.name} ({cls.cycle || 'SECONDAIRE'})
+                      </p>
+                      <div className="space-y-1.5">
+                        {sortSubjectsOfficial(cls.subjects).map((subj) => {
+                          const checked = selectedSubjectIds.includes(subj.id);
+                          return (
+                            <label key={subj.id} className="flex items-center gap-2 text-xs cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedSubjectIds((prev) => [...prev, subj.id]);
+                                  } else {
+                                    setSelectedSubjectIds((prev) => prev.filter((id) => id !== subj.id));
+                                  }
+                                }}
+                              />
+                              <span>{subj.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
-                    {user.role === 'SUPER_ADMIN' && member.id !== user.id && (
-                      <button onClick={() => handleDeleteStaff(member)} className="p-1.5 text-red-600 hover:bg-red-50 rounded cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex justify-end gap-2">
+                  <button onClick={() => setAssigningTeacher(null)} className="px-4 py-2 border rounded-lg text-xs font-bold cursor-pointer">
+                    Annuler
+                  </button>
+                  <button onClick={handleSaveTeacherAssignments} className="px-4 py-2 bg-[#0f294a] text-white rounded-lg text-xs font-bold cursor-pointer">
+                    Enregistrer les classes & matières
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="font-bold text-lg text-[#0f294a] mb-4 flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-amber-500" />
+                  {editingStaffId
+                    ? `Modifier les accès de : ${staffName}`
+                    : 'Créer un compte Personnel (Enseignant, Secrétaire, Comptable)'}
+                </h3>
+                <form onSubmit={handleCreateOrUpdateStaff} className="space-y-4 text-sm">
+                  <div>
+                    <label className="block font-semibold mb-1">Nom & Prénoms *</label>
+                    <input type="text" required placeholder="Ex: Eliane AKPO (Français 6ème)" value={staffName} onChange={(e) => setStaffName(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Email de connexion *</label>
+                    <input type="email" required value={staffEmail} onChange={(e) => setStaffEmail(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        {editingStaffId ? 'Nouveau mot de passe (optionnel)' : 'Mot de passe *'}
+                      </label>
+                      <input
+                        type="text"
+                        required={!editingStaffId}
+                        placeholder={editingStaffId ? 'Laisser vide pour garder' : 'Définir mot de passe'}
+                        value={staffPassword}
+                        onChange={(e) => setStaffPassword(e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Rôle *</label>
+                      <select value={staffRole} onChange={(e) => setStaffRole(e.target.value as 'TEACHER' | 'SECRETARY' | 'ACCOUNTANT' | 'ADMIN')} className="w-full border rounded-lg px-3 py-2">
+                        <option value="TEACHER">Enseignant (Saisie Notes)</option>
+                        <option value="SECRETARY">Secrétariat (Inscriptions)</option>
+                        <option value="ACCOUNTANT">Comptable (frmInscription & Frais Généraux)</option>
+                        <option value="ADMIN">Directeur / Censeur</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Téléphone</label>
+                    <input type="text" placeholder="Ex: 0169894149" value={staffPhone} onChange={(e) => setStaffPhone(e.target.value)} className="w-full border rounded-lg px-3 py-2" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="submit" className="flex-1 bg-[#0f294a] hover:bg-[#183d6d] text-white font-bold py-2.5 rounded-lg cursor-pointer">
+                      {editingStaffId ? 'Enregistrer les modifications' : "Créer l'accès de travail"}
+                    </button>
+                    {editingStaffId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingStaffId(null);
+                          setStaffName('');
+                          setStaffEmail('');
+                          setStaffPassword('');
+                          setStaffPhone('');
+                        }}
+                        className="px-4 py-2.5 border rounded-lg font-semibold cursor-pointer"
+                      >
+                        Annuler
+                      </button>
                     )}
-                  </li>
-                ))}
-              </ul>
+                  </div>
+                </form>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="font-bold text-base text-[#0f294a] mb-3 flex items-center gap-2">
+                  <Users className="w-5 h-5 text-[#0f294a]" /> Personnel ayant accès au portail ({staffList.length})
+                </h3>
+                <ul className="divide-y text-sm">
+                  {staffList.map((member) => (
+                    <li key={member.id} className="py-3 flex justify-between items-start gap-2">
+                      <div>
+                        <strong className="block text-[#0f294a]">{member.fullName}</strong>
+                        <span className="text-xs text-slate-500 block">
+                          {member.email} {member.phone ? `• ${member.phone}` : ''} •{' '}
+                          <span className="font-bold text-amber-700">{member.role}</span>
+                        </span>
+                        {member.role === 'TEACHER' && (
+                          <span className="text-[11px] text-emerald-700 font-semibold">
+                            {(member.subjectsTaught || []).length} matière(s) attribuée(s)
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {member.role === 'TEACHER' && (
+                          <button
+                            onClick={() => openAssignClassesModal(member)}
+                            title="Attribuer ses classes et matières"
+                            className="px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded text-xs font-bold cursor-pointer"
+                          >
+                            Classes
+                          </button>
+                        )}
+                        <button
+                          onClick={() => startEditStaff(member)}
+                          title="Modifier coordonnées / mot de passe"
+                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded cursor-pointer"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        {user.role === 'SUPER_ADMIN' && member.id !== user.id && (
+                          <button
+                            onClick={() => handleDeleteStaff(member)}
+                            title="Supprimer cet accès"
+                            className="p-1.5 text-red-600 hover:bg-red-50 rounded cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           </div>
         )}
